@@ -1,0 +1,241 @@
+import datasets
+from functools import partial
+from loguru import logger
+from providers import get_default_model, get_default_reference_models, get_provider_config
+from utils import (
+    generate_provider,
+    generate_with_references,
+    DEBUG,
+)
+import typer
+from rich import print
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.prompt import Prompt
+from datasets.utils.logging import disable_progress_bar
+from time import sleep
+
+disable_progress_bar()
+
+console = Console()
+
+welcome_message = """
+# Welcome to the MoA (Mixture-of-Agents) interactive demo!
+
+Mixture of Agents (MoA) is a novel approach that leverages the collective strengths of multiple LLMs to enhance performance, achieving state-of-the-art results. By employing a layered architecture where each layer comprises several LLM agents, MoA significantly outperforms GPT-4 Omni’s 57.5% on AlpacaEval 2.0 with a score of 65.1%, using only open-source models!
+
+This demo queries reference models, then passes the results to the aggregate model for the final response.
+
+"""
+
+default_provider = "lmstudio"
+default_model = get_default_model(default_provider)
+default_reference_models = get_default_reference_models(default_provider)
+
+
+def process_fn(
+    item,
+    temperature=0.7,
+    max_tokens=2048,
+    provider=default_provider,
+):
+    """
+    Processes a single item (e.g., a conversational turn) using specified model parameters to generate a response.
+
+    Args:
+        item (dict): A dictionary containing details about the conversational turn. It should include:
+                     - 'references': a list of reference responses that the model may use for context.
+                     - 'model': the identifier of the model to use for generating the response.
+                     - 'instruction': the user's input or prompt for which the response is to be generated.
+        temperature (float): Controls the randomness and creativity of the generated response. A higher temperature
+                             results in more varied outputs. Default is 0.7.
+        max_tokens (int): The maximum number of tokens to generate. This restricts the length of the model's response.
+                          Default is 2048.
+
+    Returns:
+        dict: A dictionary containing the 'output' key with the generated response as its value.
+    """
+
+    references = item.get("references", [])
+    model = item["model"]
+    messages = item["instruction"]
+
+    try:
+        output = generate_with_references(
+            model=model,
+            messages=messages,
+            references=references,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            generate_fn=partial(generate_provider, provider=provider),
+        )
+    except Exception as exc:
+        # One reference model failing must not abort the whole round; contribute
+        # an empty answer and keep going so the aggregator still runs.
+        logger.warning(f"Reference model {model} failed: {exc}")
+        output = ""
+    if DEBUG:
+        logger.info(
+            f"model: {model}, instruction: {item['instruction']}, output: {output[:20]}"
+        )
+
+    print(f"\nFinished querying [bold]{model}.[/bold]")
+
+    return {"output": output}
+
+
+def main(
+    model: str = default_model,
+    reference_models: list[str] = default_reference_models,
+    provider: str = default_provider,
+    temperature: float = 0.7,
+    max_tokens: int = 512,
+    rounds: int = 1,
+    multi_turn=True,
+):
+    """
+    Runs a continuous conversation between user and MoA.
+
+    Args:
+    - model (str): The primary model identifier used for generating the final response. This model aggregates the outputs from the reference models to produce the final response.
+    - reference_models (List[str]): A list of model identifiers that are used as references in the initial rounds of generation. These models provide diverse perspectives and are aggregated by the primary model.
+    - provider (str): Backend provider to use. Supported values: lmstudio, together, openai, omp, openai-compatible, atomic.
+    - temperature (float): A parameter controlling the randomness of the response generation. Higher values result in more varied outputs. The default value is 0.7.
+    - max_tokens (int): The maximum number of tokens that can be generated in the response. This limits the length of the output from each model per turn. Default is 2048.
+    - rounds (int): The number of processing rounds to refine the responses. In each round, the input is processed through the reference models, and their outputs are aggregated. Default is 1.
+    - multi_turn (bool): Enables multi-turn interaction, allowing the conversation to build context over multiple exchanges. When True, the system maintains context and builds upon previous interactions. Default is True. When False, the system generates responses independently for each input.
+    """
+    md = Markdown(welcome_message)
+    console.print(md)
+    sleep(0.75)
+    provider_config = get_provider_config(provider)
+    if model == default_model and provider != default_provider:
+        model = get_default_model(provider)
+    if reference_models == default_reference_models and provider != default_provider:
+        reference_models = get_default_reference_models(provider)
+    console.print(
+        f"[yellow]Provider:[/yellow] {provider_config.provider}"
+        + (f" at {provider_config.base_url}" if provider_config.base_url else "")
+    )
+    console.print("[yellow]Reference models:[/yellow] " + ", ".join(reference_models))
+    console.print(
+        "\n[bold]To use this demo, answer the questions below to get started [cyan](press enter to use the defaults)[/cyan][/bold]:"
+    )
+
+    data = {
+        "instruction": [[] for _ in range(len(reference_models))],
+        "references": [""] * len(reference_models),
+        "model": [m for m in reference_models],
+    }
+
+    num_proc = len(reference_models)
+
+    model = Prompt.ask(
+        "\n1. What main model do you want to use?",
+        default=model,
+    )
+    console.print(f"Selected {model}.", style="yellow italic")
+    temperature = float(
+        Prompt.ask(
+            "2. What temperature do you want to use? [cyan bold](0.7) [/cyan bold]",
+            default=0.7,
+            show_default=True,
+        )
+    )
+    console.print(f"Selected {temperature}.", style="yellow italic")
+    max_tokens = int(
+        Prompt.ask(
+            "3. What max tokens do you want to use? [cyan bold](512) [/cyan bold]",
+            default=512,
+            show_default=True,
+        )
+    )
+    console.print(f"Selected {max_tokens}.", style="yellow italic")
+
+    while True:
+
+        try:
+            instruction = Prompt.ask(
+                "\n[cyan bold]Prompt >>[/cyan bold] ",
+                default="Top things to do in NYC",
+                show_default=True,
+            )
+        except EOFError:
+            break
+
+        if instruction == "exit" or instruction == "quit":
+            print("Goodbye!")
+            break
+        if multi_turn:
+            for i in range(len(reference_models)):
+                data["instruction"][i].append({"role": "user", "content": instruction})
+                data["references"] = [""] * len(reference_models)
+        else:
+            data = {
+                "instruction": [[{"role": "user", "content": instruction}]]
+                * len(reference_models),
+                "references": [""] * len(reference_models),
+                "model": [m for m in reference_models],
+            }
+
+        eval_set = datasets.Dataset.from_dict(data)
+
+        with console.status("[bold green]Querying all the models...") as status:
+            for i_round in range(rounds):
+                eval_set = eval_set.map(
+                    partial(
+                        process_fn,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        provider=provider,
+                    ),
+                    batched=False,
+                    num_proc=num_proc,
+                )
+                references = [item["output"] for item in eval_set]
+                # Every worker in the next round should see ALL of this round's
+                # outputs. Assigning the flat list would give each row a single
+                # string, which inject_references_to_messages then iterates
+                # character-by-character — turning the layer into garbage.
+                data["references"] = [references] * len(reference_models)
+                eval_set = datasets.Dataset.from_dict(data)
+
+        console.print(
+            "[cyan bold]Aggregating results & querying the aggregate model...[/cyan bold]"
+        )
+        output = generate_with_references(
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            messages=data["instruction"][0],
+            references=references,
+            generate_fn=partial(generate_provider, provider=provider, streaming=True),
+        )
+
+        all_output = ""
+        print("\n")
+        console.log(Markdown(f"## Final answer from {model}"))
+
+        for chunk in output:
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            out = (getattr(delta, "content", None) or "") if delta is not None else ""
+            console.print(out, end="")
+            all_output += out
+        print()
+
+        if DEBUG:
+            logger.info(
+                f"model: {model}, instruction: {data['instruction'][0]}, output: {all_output[:20]}"
+            )
+        if multi_turn:
+            for i in range(len(reference_models)):
+                data["instruction"][i].append(
+                    {"role": "assistant", "content": all_output}
+                )
+
+
+if __name__ == "__main__":
+    typer.run(main)

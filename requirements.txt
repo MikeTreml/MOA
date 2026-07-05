@@ -1,0 +1,11 @@
+openai
+fire
+loguru
+datasets
+typer
+rich
+together
+requests
+fastapi
+uvicorn
+pytest
