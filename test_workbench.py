@@ -257,6 +257,67 @@ class StorageTests(unittest.TestCase):
                 self.assertEqual(reloaded.get_profile("Saved").aggregator_model, "agg")
 
 
+class CloudModelRoutingTests(unittest.TestCase):
+    def _profile(self):
+        from workbench.schemas import CloudModel, Profile
+
+        return Profile(
+            name="Mixed",
+            provider="openai-compatible",
+            base_url="http://local:1235/v1",
+            worker_models=["qwen-3b", "gpt4o"],
+            aggregator_model="gpt4o",
+            evaluator_model="qwen-3b",
+            cloud_models=[
+                CloudModel(alias="gpt4o", provider="openai", model="gpt-4o-mini"),
+                CloudModel(alias="claude", provider="omp", model="claude-3-5-sonnet", base_url="http://127.0.0.1:4141/v1"),
+            ],
+        )
+
+    def test_alias_routes_to_cloud_provider(self):
+        from workbench.workflow import resolve_model_route
+
+        profile = self._profile()
+        self.assertEqual(resolve_model_route(profile, "gpt4o"), ("openai", None, "gpt-4o-mini"))
+        self.assertEqual(
+            resolve_model_route(profile, "claude"),
+            ("omp", "http://127.0.0.1:4141/v1", "claude-3-5-sonnet"),
+        )
+        # Non-alias falls through to the profile's default provider.
+        self.assertEqual(
+            resolve_model_route(profile, "qwen-3b"),
+            ("openai-compatible", "http://local:1235/v1", "qwen-3b"),
+        )
+
+    def test_alias_with_empty_model_uses_alias_as_id(self):
+        from workbench.schemas import CloudModel, Profile
+        from workbench.workflow import resolve_model_route
+
+        profile = Profile(name="X", cloud_models=[CloudModel(alias="gpt-4o-mini", provider="openai")])
+        self.assertEqual(resolve_model_route(profile, "gpt-4o-mini"), ("openai", None, "gpt-4o-mini"))
+
+    def test_provider_complete_sends_resolved_route(self):
+        async def scenario():
+            from unittest.mock import AsyncMock, patch
+
+            from workbench.workflow import provider_complete
+
+            profile = self._profile()
+            fake = AsyncMock()
+            fake.return_value = type(
+                "R", (), {"choices": [type("C", (), {"message": type("M", (), {"content": "hi"})()})()]}
+            )()
+            with patch("workbench.workflow.generate_chat_completion_async", new=fake):
+                out = await provider_complete("gpt4o", [{"role": "user", "content": "x"}], profile=profile, json_mode=True)
+            self.assertEqual(out, "hi")
+            kwargs = fake.call_args.kwargs
+            self.assertEqual(kwargs["model"], "gpt-4o-mini")
+            self.assertEqual(kwargs["provider"], "openai")
+            self.assertIsNone(kwargs["base_url"])
+
+        asyncio.run(scenario())
+
+
 class TraceTimingTests(unittest.TestCase):
     def test_stage_started_at_precedes_ended_at(self):
         async def scenario():

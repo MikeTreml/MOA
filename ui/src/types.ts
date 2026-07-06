@@ -28,6 +28,13 @@ export interface FlowGraph {
   renderer?: string;
 }
 
+export interface CloudModel {
+  alias: string;
+  provider: string;
+  model: string;
+  base_url: string;
+}
+
 export interface Profile {
   name: string;
   provider: string;
@@ -41,6 +48,7 @@ export interface Profile {
   max_iterations: number;
   allowed_roots: string[];
   graph?: FlowGraph | null;
+  cloud_models: CloudModel[];
 }
 
 export interface GeneratedImage {

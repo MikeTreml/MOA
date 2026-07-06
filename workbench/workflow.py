@@ -76,20 +76,34 @@ def extract_json(text: str) -> Any | None:
         return None
 
 
+def resolve_model_route(profile: Profile, model: str) -> tuple[str, str | None, str]:
+    """Map a model reference to (provider, base_url, real model id).
+
+    If the reference matches a registered cloud-model alias, the call routes to
+    that provider (base_url empty -> the provider's own default/env resolution);
+    otherwise it goes to the profile's default provider. Cloud models run on
+    someone else's hardware, so nothing local-size-related ever applies to them."""
+    for cloud in profile.cloud_models:
+        if cloud.alias == model:
+            return cloud.provider, (cloud.base_url or None), (cloud.model or cloud.alias)
+    return profile.provider, profile.base_url, model
+
+
 async def provider_complete(
     model, messages, profile: Profile, json_mode=False, on_token: TokenFn | None = None, **kwargs
 ) -> str:
+    provider, base_url, model_id = resolve_model_route(profile, model)
     response_format = {"type": "json_object"} if json_mode else None
     if on_token is not None and not json_mode:
         try:
             parts: list[str] = []
             async for delta in stream_chat_completion_async(
-                model=model,
+                model=model_id,
                 messages=messages,
                 max_tokens=kwargs.get("max_tokens", 1024),
                 temperature=kwargs.get("temperature", 0.2),
-                provider=profile.provider,
-                base_url=profile.base_url,
+                provider=provider,
+                base_url=base_url,
             ):
                 if delta:
                     parts.append(delta)
@@ -101,33 +115,33 @@ async def provider_complete(
             pass
     try:
         response = await generate_chat_completion_async(
-            model=model,
+            model=model_id,
             messages=messages,
             max_tokens=kwargs.get("max_tokens", 1024),
             temperature=kwargs.get("temperature", 0.2),
-            provider=profile.provider,
-            base_url=profile.base_url,
+            provider=provider,
+            base_url=base_url,
             response_format=response_format,
         )
     except TypeError:
         response = await generate_chat_completion_async(
-            model=model,
+            model=model_id,
             messages=messages,
             max_tokens=kwargs.get("max_tokens", 1024),
             temperature=kwargs.get("temperature", 0.2),
-            provider=profile.provider,
-            base_url=profile.base_url,
+            provider=provider,
+            base_url=base_url,
         )
     except Exception:
         if not json_mode:
             raise
         response = await generate_chat_completion_async(
-            model=model,
+            model=model_id,
             messages=messages,
             max_tokens=kwargs.get("max_tokens", 1024),
             temperature=kwargs.get("temperature", 0.2),
-            provider=profile.provider,
-            base_url=profile.base_url,
+            provider=provider,
+            base_url=base_url,
         )
     return get_completion_text(response)
 

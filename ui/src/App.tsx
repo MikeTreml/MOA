@@ -28,7 +28,7 @@ import { api, formatBytes, modelKey, modelName, modelSize } from "./api";
 import { ActivityView } from "./ActivityView";
 import { GraphBuilder } from "./GraphBuilder";
 import { useRunActivity, type RunActivityState } from "./useRunActivity";
-import type { FileChange, GeneratedImage, LmModel, LmStudioStatus, ModelPlan, Profile, ProviderPreset, RunRecord, Workflow } from "./types";
+import type { CloudModel, FileChange, GeneratedImage, LmModel, LmStudioStatus, Profile, ProviderPreset, RunRecord, Workflow } from "./types";
 
 function recordToActivity(record: RunRecord | null): RunActivityState {
   if (!record) return { stages: [], record: null, status: "idle", error: null, reconnecting: false };
@@ -323,6 +323,28 @@ function App() {
     const exists = current.includes(model);
     const next = exists ? current.filter((item) => item !== model) : [...current, model];
     updateProfile({ worker_models: next.length ? next : [model] });
+  }
+
+  function addCloudModel() {
+    if (!profile) return;
+    const existing = new Set((profile.cloud_models ?? []).map((c) => c.alias));
+    let n = 1;
+    let alias = "cloud-model";
+    while (existing.has(alias)) alias = `cloud-model-${++n}`;
+    updateProfile({
+      cloud_models: [...(profile.cloud_models ?? []), { alias, provider: "openai", model: "", base_url: "" }]
+    });
+  }
+
+  function updateCloudModel(index: number, patch: Partial<CloudModel>) {
+    if (!profile) return;
+    const next = (profile.cloud_models ?? []).map((c, i) => (i === index ? { ...c, ...patch } : c));
+    updateProfile({ cloud_models: next });
+  }
+
+  function removeCloudModel(index: number) {
+    if (!profile) return;
+    updateProfile({ cloud_models: (profile.cloud_models ?? []).filter((_, i) => i !== index) });
   }
 
   async function refreshModels() {
@@ -724,15 +746,6 @@ function App() {
                   </select>
                 </label>
                 <label>
-                  Memory cap
-                  <input
-                    type="number"
-                    min={1}
-                    value={profile.memory_cap_gb}
-                    onChange={(event) => updateProfile({ memory_cap_gb: numberOr(event.target.value, profile.memory_cap_gb, 1) })}
-                  />
-                </label>
-                <label>
                   Max iterations
                   <input
                     type="number"
@@ -910,18 +923,57 @@ function App() {
               </div>
             </section>
             <section className="panel rolePanel">
-              <h2>Role Profile</h2>
+              <h2>Cloud API Models</h2>
+              <p className="providerHint">
+                Hosted models (keys from env) — no local footprint, so size never applies. Assign them roles like any local model; each call routes to its own provider, so you can mix local workers with a cloud aggregator.
+              </p>
+              <div className="modelTable">
+                {(profile.cloud_models ?? []).map((cloud, index) => {
+                  const isWorker = profile.worker_models.includes(cloud.alias);
+                  const isAggregator = profile.aggregator_model === cloud.alias;
+                  const isEvaluator = profile.evaluator_model === cloud.alias;
+                  return (
+                    <article className="modelRow" key={`${cloud.alias}-${index}`}>
+                      <div className="modelMeta">
+                        <div className="modelHeader">
+                          <span>{cloud.alias}</span>
+                          <span className="pill pillOk">API · {providerDisplayName(cloud.provider)}</span>
+                        </div>
+                        <code>{cloud.model || cloud.alias}</code>
+                      </div>
+                      <div className="roleButtons">
+                        <button type="button" className={isWorker ? "roleActive" : ""} onClick={() => toggleWorker(cloud.alias)} aria-pressed={isWorker}>
+                          <Users size={14} /> Worker
+                        </button>
+                        <button type="button" className={isAggregator ? "roleActive" : ""} onClick={() => updateProfile({ aggregator_model: cloud.alias })} aria-pressed={isAggregator}>
+                          <BrainCircuit size={14} /> Aggregator
+                        </button>
+                        <button type="button" className={isEvaluator ? "roleActive" : ""} onClick={() => updateProfile({ evaluator_model: cloud.alias })} aria-pressed={isEvaluator}>
+                          <ShieldCheck size={14} /> Evaluator
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+                {!(profile.cloud_models ?? []).length && (
+                  <p className="empty">None yet — add cloud models in the Profiles tab.</p>
+                )}
+              </div>
+
+              <h2 className="subsectionTitle">Role Profile</h2>
               <div className="roleSelectors">
                 <label>
                   Aggregator
                   <select value={profile.aggregator_model} onChange={(event) => updateProfile({ aggregator_model: event.target.value })}>
                     {llmModels.map((model, index) => <option key={`${modelKey(model)}-${index}`} value={modelKey(model)}>{modelName(model)}</option>)}
+                    {(profile.cloud_models ?? []).map((cloud, index) => <option key={`cloud-${cloud.alias}-${index}`} value={cloud.alias}>{cloud.alias} (API)</option>)}
                   </select>
                 </label>
                 <label>
                   Evaluator
                   <select value={profile.evaluator_model} onChange={(event) => updateProfile({ evaluator_model: event.target.value })}>
                     {llmModels.map((model, index) => <option key={`${modelKey(model)}-${index}`} value={modelKey(model)}>{modelName(model)}</option>)}
+                    {(profile.cloud_models ?? []).map((cloud, index) => <option key={`cloud-${cloud.alias}-${index}`} value={cloud.alias}>{cloud.alias} (API)</option>)}
                   </select>
                 </label>
               </div>
@@ -1095,10 +1147,9 @@ function App() {
                 </select>
               </label>
               <label>Base URL<input value={profile.base_url} onChange={(event) => updateProfile({ base_url: event.target.value })} /></label>
-              <label>Memory cap<input type="number" min={1} value={profile.memory_cap_gb} onChange={(event) => updateProfile({ memory_cap_gb: numberOr(event.target.value, profile.memory_cap_gb, 1) })} /></label>
             </div>
             <p className="providerHint">
-              API keys are read from environment variables, not saved in profiles. OMP uses <code>OMP_API_KEY</code>, Together uses <code>TOGETHER_API_KEY</code>, and generic proxies use <code>MOA_API_KEY</code>.
+              API keys are read from environment variables, not saved in profiles. OpenAI uses <code>OPENAI_API_KEY</code>, OMP uses <code>OMP_API_KEY</code>, Together uses <code>TOGETHER_API_KEY</code>, and generic proxies use <code>MOA_API_KEY</code>.
             </p>
             <label>Worker models<textarea className="compactText" value={textFromList(profile.worker_models)} onChange={(event) => updateProfile({ worker_models: uniqueLines(event.target.value) })} /></label>
             <div className="formGrid">
@@ -1107,6 +1158,38 @@ function App() {
             </div>
             <div className="formGrid">
               <label>Image model<input value={profile.image_model} placeholder="e.g. dall-e-3 / sdxl (optional)" onChange={(event) => updateProfile({ image_model: event.target.value })} /></label>
+            </div>
+
+            <div className="cloudModels">
+              <div className="sectionHeader">
+                <div>
+                  <h2>Cloud API Models</h2>
+                  <p>Hosted models under a local alias — assignable to any role, keys from env, no local size/hosting.</p>
+                </div>
+                <button className="secondaryButton" onClick={addCloudModel} disabled={busy}>
+                  <Sparkles size={15} /> Add cloud model
+                </button>
+              </div>
+              {(profile.cloud_models ?? []).map((cloud, index) => (
+                <div className="cloudRow" key={index}>
+                  <label>Alias<input value={cloud.alias} onChange={(event) => updateCloudModel(index, { alias: event.target.value })} /></label>
+                  <label>
+                    Provider
+                    <select value={cloud.provider} onChange={(event) => updateCloudModel(index, { provider: event.target.value })}>
+                      <option value="openai">OpenAI</option>
+                      <option value="together">Together</option>
+                      <option value="omp">OMP</option>
+                      <option value="openai-compatible">OpenAI-compatible</option>
+                    </select>
+                  </label>
+                  <label>Model id<input value={cloud.model} placeholder="e.g. gpt-4o-mini" onChange={(event) => updateCloudModel(index, { model: event.target.value })} /></label>
+                  <label>Base URL<input value={cloud.base_url} placeholder="(provider default)" onChange={(event) => updateCloudModel(index, { base_url: event.target.value })} /></label>
+                  <button className="profileDelete" title="Remove" onClick={() => removeCloudModel(index)}>
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              ))}
+              {!(profile.cloud_models ?? []).length && <p className="empty">None yet. Add one, then assign it a role on the Models tab.</p>}
             </div>
             {profile.workflow === "graph" && (
               <div className="graphEditor">
