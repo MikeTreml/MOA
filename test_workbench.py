@@ -6,58 +6,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-class ModelPlannerTests(unittest.TestCase):
-    def test_plan_respects_cap_and_prefers_stronger_aggregator(self):
-        from workbench.model_planner import plan_models
-
-        models = [
-            {
-                "type": "llm",
-                "modelKey": "tiny-worker",
-                "sizeBytes": 1 * 1024**3,
-                "trainedForToolUse": True,
-                "vision": False,
-                "maxContextLength": 32768,
-                "architecture": "llama",
-            },
-            {
-                "type": "llm",
-                "modelKey": "medium-worker",
-                "sizeBytes": 6 * 1024**3,
-                "trainedForToolUse": True,
-                "vision": False,
-                "maxContextLength": 131072,
-                "architecture": "qwen",
-            },
-            {
-                "type": "llm",
-                "modelKey": "strong-aggregator",
-                "sizeBytes": 20 * 1024**3,
-                "trainedForToolUse": True,
-                "vision": False,
-                "maxContextLength": 262144,
-                "architecture": "mistral",
-            },
-            {
-                "type": "llm",
-                "modelKey": "too-large",
-                "sizeBytes": 90 * 1024**3,
-                "trainedForToolUse": True,
-                "vision": False,
-                "maxContextLength": 262144,
-                "architecture": "qwen",
-            },
-        ]
-
-        plan = plan_models(models, memory_cap_gb=30)
-
-        selected = plan.worker_models + [plan.aggregator_model, plan.evaluator_model]
-        self.assertNotIn("too-large", selected)
-        self.assertLessEqual(plan.total_size_bytes, 30 * 1024**3)
-        self.assertEqual(plan.aggregator_model, "strong-aggregator")
-        self.assertEqual(plan.evaluator_model, "strong-aggregator")
-        self.assertGreaterEqual(len(plan.worker_models), 2)
-
 
 class WorkflowTests(unittest.TestCase):
     def test_hybrid_runs_parallel_workers_then_synthesizes_and_evaluates(self):

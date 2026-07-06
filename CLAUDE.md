@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A fork of Together AI's **Mixture-of-Agents (MoA)** reference implementation, extended with two things the upstream repo does not have:
 
-1. A **provider abstraction layer** (`providers.py`) that routes all LLM calls through an OpenAI-compatible client and **defaults to a local LM Studio server instead of Together**.
+1. A **provider abstraction layer** (`providers.py`) that routes all LLM calls through an OpenAI-compatible client. The Workbench defaults to a local **llama.cpp / OpenAI-compatible** server (`MOA_BASE_URL`, default `http://127.0.0.1:1235/v1`).
 2. A local **"Workbench"** — a FastAPI backend (`workbench/`) plus a React/Vite GUI (`ui/`) for running hybrid MoA workflows (orchestrate → parallel workers → synthesize → evaluate → refine) with human-approved file edits.
 
 The original MoA CLI demo and the academic evaluation harness (AlpacaEval / MT-Bench / FLASK) are still present and still work.
@@ -88,16 +88,15 @@ Module map:
 - `schemas.py` — Pydantic models (`Profile`, `RunRequest`, `RunRecord`, `FileChange`, `TraceStep`, `ModelPlan`, …). `Profile` is the unit of config: provider, base_url, the three model roles (worker/aggregator/evaluator), `max_iterations`, and `allowed_roots`.
 - `storage.py` — JSON-file persistence under `%LOCALAPPDATA%\MoAWorkbench` (`profiles.json`, `active_profile.txt`, `runs/`, `changes/`). No database.
 - `file_safety.py` — **security boundary.** Every file read/write resolves the path against `allowed_roots` and raises `PathOutsideAllowedRoots` otherwise. Preserve this guard; do not add file I/O that bypasses `resolve_allowed_path`. `constrain_roots(requested, authoritative)` lets API callers narrow but never widen the server-trusted roots; `apply_file_change` re-reads the target and raises `FileChangedOnDisk` (→ 409) if it drifted from the proposal (TOCTOU), and reads/writes with `newline=""` to preserve exact bytes.
-- `lmstudio.py` — shells out to the `lms` CLI (`ls`/`ps`/`load`/`server status`) and probes `/v1/models`. Model loading and status depend on `lms` being installed.
-- `model_planner.py` — given LM Studio's model list and a `memory_cap_gb`, picks an aggregator (strongest that fits) + up to 3 workers within the cap. Pure/heuristic, well unit-tested.
-- `provider_presets.py` — seed presets (LM Studio, OMP, Together, generic, atomic) surfaced in the Profiles tab.
+- `provider_models.py` — provider-agnostic model discovery: `list_models(base_url)` and `server_status(base_url)` read the **active profile's** OpenAI-compatible `/v1/models` (llama.cpp, OpenAI, any compatible server). No CLI. (The old LM Studio `lms`-CLI module + `model_planner.py` were removed — the tool is now provider-agnostic; the Models tab and status reflect whatever endpoint the active profile points at.)
+- `provider_presets.py` — seed presets (llama.cpp, OMP, Together, generic, atomic) surfaced in the Profiles tab.
 
 ### Run lifecycle (streaming)
 
 Runs are asynchronous and streamed, not request/response:
 - `POST /api/runs/start` launches `run_workflow` as a background asyncio task and returns a `run_id` immediately.
 - `GET /api/runs/{run_id}/events` is an **SSE** endpoint (`text/event-stream`). The `RunSession` buffers every event — `stage_start`, streamed `token`, each completed `TraceStep`, and the terminal result — so a late subscriber replays what it missed, then receives live events. Subscribing/disconnecting never affects the run (viewers are pure observers).
-- `POST /api/runs/{run_id}/stop` cancels the task and **persists the partial trace** so a stopped run still appears in history; `GET /api/runs/{run_id}` fetches the final record. Other routes: `/api/runs` (list/create records), `DELETE /api/runs/{id}`, `DELETE /api/profiles/{name}`, `/api/files/read`, `/api/file-changes/{id}/apply|reject`, `/api/model-plan`, `/api/models/load-plan`.
+- `POST /api/runs/{run_id}/stop` cancels the task and **persists the partial trace** so a stopped run still appears in history; `GET /api/runs/{run_id}` fetches the final record. Other routes: `/api/runs` (list/create records), `DELETE /api/runs/{id}`, `DELETE /api/profiles/{name}`, `/api/files/read`, `/api/file-changes/{id}/apply|reject`. Model discovery is `/api/status` + `/api/models`, both reading the active profile's `/v1/models`.
 
 Saved flows as callable agents: a `Profile` is a named, persisted flow (its `workflow` field selects the shape). `GET /api/flows` lists them; `POST /api/flows/{name}/run` resolves the flow **server-side** and runs it synchronously from just `{prompt, context_files?}` (the caller never ships the config), returning the `RunRecord`; `POST /api/flows/{name}/run-stream` does the same but returns a `run_id` to subscribe to via `/api/runs/{id}/events`. Both share `_launch_run`/`run_workflow` with the ad-hoc run endpoints and honor the optional `MOA_WORKBENCH_TOKEN`. The Profiles tab shows a copy-able curl for the active flow. (There is no custom-graph engine yet — a flow is still one of the three built-in shapes.)
 
@@ -111,6 +110,6 @@ The synthesizer may emit a fenced JSON block `{"file_changes":[{"path","proposed
 
 ## Gotchas
 
-- Upstream's default provider was Together; here it's **`lmstudio`** (`moa.py`, `advanced-moa.py`, `bot.py` all default to local). Running them requires an LM Studio server (or override `MOA_PROVIDER`).
+- The Workbench default profile is **`openai-compatible`** at `MOA_BASE_URL` (llama.cpp). The CLI demos (`moa.py`, `advanced-moa.py`, `bot.py`) still default to `MOA_PROVIDER=lmstudio` unless overridden — `lmstudio` remains a valid provider alias (it's just an OpenAI-compatible endpoint at :1234), but nothing in the Workbench uses it by default.
 - `bot.py` uses HuggingFace `datasets` + multiprocessing (`num_proc`) to fan out reference-model calls — that's why `datasets` is a dependency for a CLI chat demo.
 - Provider config is `frozen` dataclass; pass overrides via function args, not mutation.

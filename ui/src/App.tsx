@@ -171,7 +171,6 @@ function App() {
   const [presets, setPresets] = useState<ProviderPreset[]>([]);
   const [models, setModels] = useState<LmModel[]>([]);
   const [status, setStatus] = useState<LmStudioStatus | null>(null);
-  const [plan, setPlan] = useState<ModelPlan | null>(null);
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [latestRun, setLatestRun] = useState<RunRecord | null>(null);
   const [prompt, setPrompt] = useState("Analyze this project and propose the next safest implementation step.");
@@ -191,7 +190,6 @@ function App() {
   const [message, setMessage] = useState("");
   const [bootError, setBootError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
-  const [loadResults, setLoadResults] = useState<Array<{ model: string; ok: boolean; stdout: string; stderr: string }>>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [theme, setTheme] = useState<"dark" | "light">(
     () => (localStorage.getItem("moa-theme") as "dark" | "light") || "dark"
@@ -298,17 +296,7 @@ function App() {
     () => new Set((status?.loaded_models ?? []).map(loadedModelKey).filter(Boolean)),
     [status]
   );
-  const selectedProfileModelKeys = useMemo(() => {
-    if (!profile) return [];
-    return uniqueModelKeys([...profile.worker_models, profile.aggregator_model, profile.evaluator_model]);
-  }, [profile]);
-  const selectedProfileSize = useMemo(() => {
-    const sizeByKey = new Map(llmModels.map((model) => [modelKey(model), modelSize(model)]));
-    return selectedProfileModelKeys.reduce((total, key) => total + (sizeByKey.get(key) ?? 0), 0);
-  }, [llmModels, selectedProfileModelKeys]);
-  const selectedPlanSize = plan ? formatBytes(plan.total_size_bytes) : formatBytes(selectedProfileSize);
-  const activeProviderName = providerDisplayName(profile?.provider ?? "lmstudio");
-  const isLmStudioProfile = (profile?.provider ?? "lmstudio").trim().toLowerCase() === "lmstudio";
+  const activeProviderName = providerDisplayName(profile?.provider ?? "openai-compatible");
 
   function updateProfile(patch: Partial<Profile>) {
     if (!profile) return;
@@ -324,8 +312,6 @@ function App() {
       if (!ok) return;
     }
     setProfile(next);
-    setPlan(null);
-    setLoadResults([]);
     setGraphText(next.graph ? JSON.stringify(next.graph, null, 2) : "");
     setGraphErrors([]);
     setDirty(false);
@@ -339,63 +325,15 @@ function App() {
     updateProfile({ worker_models: next.length ? next : [model] });
   }
 
-  async function loadProfileModels() {
-    if (!profile) return;
-    if (!isLmStudioProfile) {
-      setMessage("Load selected uses LM Studio. Save this remote provider setup, then run it through its OpenAI-compatible base URL.");
-      return;
-    }
-    const keys = uniqueModelKeys([...profile.worker_models, profile.aggregator_model, profile.evaluator_model]);
+  async function refreshModels() {
+    // Re-fetch the model list + reachability from the ACTIVE provider's /v1/models.
     setBusy(true);
     setMessage("");
     try {
-      const result = await api.loadModels(keys);
-      setLoadResults(result.results);
-      const statusPayload = await api.status();
+      const [modelPayload, statusPayload] = await Promise.all([api.models(), api.status()]);
+      setModels(modelPayload.models);
       setStatus(statusPayload);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function suggestPlan() {
-    if (!profile) return;
-    if (!isLmStudioProfile) {
-      setMessage("Suggest uses LM Studio model metadata. Use provider presets or profile fields for remote model IDs.");
-      return;
-    }
-    setBusy(true);
-    setMessage("");
-    try {
-      const suggested = await api.modelPlan(profile.memory_cap_gb, models);
-      setPlan(suggested);
-      updateProfile({
-        worker_models: suggested.worker_models,
-        aggregator_model: suggested.aggregator_model,
-        evaluator_model: suggested.evaluator_model
-      });
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function loadSelectedPlan() {
-    if (!plan) return;
-    if (!isLmStudioProfile) {
-      setMessage("Load plan uses the LM Studio lms CLI. Remote providers run through their base URL and do not need local loading.");
-      return;
-    }
-    setBusy(true);
-    setMessage("");
-    try {
-      const result = await api.loadPlan(plan);
-      setLoadResults(result.results);
-      const statusPayload = await api.status();
-      setStatus(statusPayload);
+      setMessage(`${modelPayload.models.length} model(s) from ${activeProviderName}.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -430,9 +368,7 @@ function App() {
       aggregator_model: preset.aggregator_model,
       evaluator_model: preset.evaluator_model
     });
-    setPlan(null);
     setStatus(null);
-    setLoadResults([]);
     const envText = preset.env_keys.length ? ` Env: ${preset.env_keys.join(", ")}.` : "";
     setMessage(`${preset.name} preset applied.${envText}`);
   }
@@ -720,17 +656,11 @@ function App() {
             <p>{profile.name} - {workflowLabels[profile.workflow]}</p>
           </div>
           <div className="topActions">
-            {isLmStudioProfile ? (
-              <span className={`serverState ${status?.http_ok ? "online" : "offline"}`}>
-                <Server size={16} /> {status?.http_ok ? "LM Studio online" : "LM Studio offline"}
-              </span>
-            ) : (
-              // The status probe only reflects LM Studio; for a remote provider we
-              // can't assert online/offline, so show the provider name neutrally.
-              <span className="serverState remote">
-                <Server size={16} /> {activeProviderName} (remote)
-              </span>
-            )}
+            {/* Status probes the ACTIVE provider's /v1/models, so online/offline
+                reflects the endpoint the run will actually hit. */}
+            <span className={`serverState ${status?.http_ok ? "online" : "offline"}`}>
+              <Server size={16} /> {activeProviderName} {status?.http_ok ? "online" : "offline"}
+            </span>
             <button
               className="iconButton"
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
@@ -817,8 +747,8 @@ function App() {
             <section className="panel inspectorPanel">
               <h2>Setup</h2>
               <div className="metric">
-                <span>Model plan</span>
-                <strong>{selectedPlanSize}</strong>
+                <span>Provider</span>
+                <strong>{activeProviderName}</strong>
               </div>
               <div className="roleList">
                 <span>Workers</span>
@@ -828,9 +758,6 @@ function App() {
                 <span>Evaluator</span>
                 <code>{profile.evaluator_model}</code>
               </div>
-              <button className="secondaryButton" onClick={suggestPlan} disabled={busy || !isLmStudioProfile}>
-                <Sparkles size={16} /> Suggest under cap
-              </button>
               <button className="secondaryButton" onClick={saveProfile} disabled={busy}>
                 <Save size={16} /> Save setup
               </button>
@@ -941,15 +868,15 @@ function App() {
             <section className="panel">
               <div className="sectionHeader">
                 <div>
-                  <h2>LM Studio Models</h2>
+                  <h2>{activeProviderName} Models</h2>
                   <p>
-                    {isLmStudioProfile
-                      ? `${llmModels.length} local or linked LLMs detected.`
-                      : "Remote provider model IDs are edited in Profiles; this planner is for LM Studio."}
+                    {llmModels.length
+                      ? `${llmModels.length} model(s) from ${profile.base_url}. Click to assign a role.`
+                      : `No models found at ${profile.base_url}. Check the server is up, then Refresh.`}
                   </p>
                 </div>
-                <button className="secondaryButton" onClick={suggestPlan} disabled={busy || !isLmStudioProfile}>
-                  <Sparkles size={16} /> Suggest
+                <button className="secondaryButton" onClick={refreshModels} disabled={busy}>
+                  <RefreshCw size={16} /> Refresh
                 </button>
               </div>
               <div className="modelTable">
@@ -963,34 +890,17 @@ function App() {
                       <div className="modelMeta">
                         <div className="modelHeader">
                           <span>{modelName(model)}</span>
-                          <StatusPill status={loadedModelKeys.has(key) ? "loaded" : "idle"} />
                         </div>
                         <code>{key}</code>
-                        <small>{formatBytes(modelSize(model))} - {model.architecture ?? "unknown"}</small>
                       </div>
                       <div className="roleButtons">
-                        <button
-                          type="button"
-                          className={isWorker ? "roleActive" : ""}
-                          onClick={() => toggleWorker(key)}
-                          aria-pressed={isWorker}
-                        >
+                        <button type="button" className={isWorker ? "roleActive" : ""} onClick={() => toggleWorker(key)} aria-pressed={isWorker}>
                           <Users size={14} /> Worker
                         </button>
-                        <button
-                          type="button"
-                          className={isAggregator ? "roleActive" : ""}
-                          onClick={() => updateProfile({ aggregator_model: key })}
-                          aria-pressed={isAggregator}
-                        >
+                        <button type="button" className={isAggregator ? "roleActive" : ""} onClick={() => updateProfile({ aggregator_model: key })} aria-pressed={isAggregator}>
                           <BrainCircuit size={14} /> Aggregator
                         </button>
-                        <button
-                          type="button"
-                          className={isEvaluator ? "roleActive" : ""}
-                          onClick={() => updateProfile({ evaluator_model: key })}
-                          aria-pressed={isEvaluator}
-                        >
+                        <button type="button" className={isEvaluator ? "roleActive" : ""} onClick={() => updateProfile({ evaluator_model: key })} aria-pressed={isEvaluator}>
                           <ShieldCheck size={14} /> Evaluator
                         </button>
                       </div>
@@ -1001,10 +911,6 @@ function App() {
             </section>
             <section className="panel rolePanel">
               <h2>Role Profile</h2>
-              <div className="metric">
-                <span>Selected footprint</span>
-                <strong>{formatBytes(selectedProfileSize)}</strong>
-              </div>
               <div className="roleSelectors">
                 <label>
                   Aggregator
@@ -1030,39 +936,10 @@ function App() {
                 <button className="secondaryButton" onClick={saveProfile} disabled={busy}>
                   <Save size={16} /> Save setup
                 </button>
-                <button className="primaryButton" onClick={loadProfileModels} disabled={busy || !isLmStudioProfile}>
-                  <UploadCloud size={17} /> Load selected
-                </button>
               </div>
-
-              <h2 className="subsectionTitle">Suggested Load Plan</h2>
-              {plan ? (
-                <>
-                  <div className="metric">
-                    <span>Total selected</span>
-                    <strong>{formatBytes(plan.total_size_bytes)}</strong>
-                  </div>
-                  <div className="roleList">
-                    <span>Workers</span>
-                    {plan.worker_models.map((model, index) => <code key={`${model}-${index}`}>{model}</code>)}
-                    <span>Aggregator</span>
-                    <code>{plan.aggregator_model}</code>
-                    <span>Evaluator</span>
-                    <code>{plan.evaluator_model}</code>
-                  </div>
-                  <button className="primaryButton wide" onClick={loadSelectedPlan} disabled={busy || !isLmStudioProfile}>
-                    <UploadCloud size={17} /> Load plan
-                  </button>
-                </>
-              ) : (
-                <p className="empty">Suggest a plan to select workers and evaluator under the cap.</p>
-              )}
-              {loadResults.map((result, index) => (
-                <div className="loadResult" key={`${result.model}-${index}`}>
-                  <StatusPill status={result.ok ? "complete" : "error"} />
-                  <span>{result.model}</span>
-                </div>
-              ))}
+              <p className="providerHint">
+                Model names are the aliases your server reports at <code>/v1/models</code>. Different workers can be different models (slower if your server swaps one model at a time).
+              </p>
             </section>
           </div>
         )}
