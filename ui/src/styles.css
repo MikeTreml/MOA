@@ -1375,6 +1375,49 @@ code {
   font-size: 12px;
 }
 
+/* Worker count stepper (Models tab) */
+.workerStepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--surface-1);
+}
+
+.workerStepper.roleActive {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.workerStepper button {
+  width: 26px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.workerStepper button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.workerStepper .stepperLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px;
+  font-size: 13px;
+  white-space: nowrap;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+
 /* Cloud API models editor (Profiles tab) */
 .cloudModels {
   display: grid;
