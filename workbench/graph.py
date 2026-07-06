@@ -140,13 +140,12 @@ def _has_cycle(nodes: list[GraphNode]) -> bool:
         return True
 
 
-def topological_order(nodes: list[GraphNode]) -> list[GraphNode]:
-    """Kahn's algorithm. Raises ValueError if the graph contains a cycle."""
+def _topo(nodes: list[GraphNode], deps: dict[str, set[str]]) -> list[GraphNode]:
+    """Kahn's algorithm over a given dependency map. Raises ValueError on cycle."""
     by_id = {n.id: n for n in nodes}
-    deps = {nid: {d for d in ds if d in by_id} for nid, ds in _incoming(nodes).items()}
-    ready = [nid for nid, ds in deps.items() if not ds]
+    remaining = {nid: {d for d in ds if d in by_id} for nid, ds in deps.items()}
+    ready = [nid for nid, ds in remaining.items() if not ds]
     ordered: list[str] = []
-    remaining = dict(deps)
     while ready:
         nid = ready.pop(0)
         ordered.append(nid)
@@ -158,6 +157,33 @@ def topological_order(nodes: list[GraphNode]) -> list[GraphNode]:
     if len(ordered) != len(nodes):
         raise ValueError("cycle")
     return [by_id[nid] for nid in ordered]
+
+
+def topological_order(nodes: list[GraphNode]) -> list[GraphNode]:
+    """Data-DAG order (depends_on / fanout over / when_node). Raises on cycle."""
+    return _topo(nodes, _incoming(nodes))
+
+
+def execution_order(nodes: list[GraphNode]) -> list[GraphNode]:
+    """Topological order with gate barriers: a node downstream of a gate's loop
+    body (but outside it) must run AFTER the gate, so it never reads a draft that
+    a later loop iteration will refine. Adds control edges gate -> such nodes."""
+    deps = {nid: set(ds) for nid, ds in _incoming(nodes).items()}
+    for gate in nodes:
+        if gate.kind != "gate" or not gate.loop_to:
+            continue
+        body = {n.id for n in loop_body(nodes, gate)}
+        if not body:
+            continue
+        anc = ancestors(nodes, gate.id)
+        downstream: set[str] = set()
+        for member in body:
+            downstream |= descendants(nodes, member)
+        for nid in downstream:
+            if nid in body or nid == gate.id or nid in anc:
+                continue  # excluding ancestors keeps the added edge acyclic
+            deps[nid].add(gate.id)
+    return _topo(nodes, deps)
 
 
 def auto_layout(graph: FlowGraph) -> FlowGraph:

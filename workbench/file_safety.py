@@ -110,14 +110,22 @@ def list_directory(path: str | None, allowed_roots: list[str]) -> dict:
         return {"path": None, "parent": None, "entries": entries}
 
     resolved = resolve_allowed_path(path, allowed_roots)
+    if not resolved.exists():
+        raise FileNotFoundError(f"{resolved} does not exist.")
     if not resolved.is_dir():
         raise NotADirectoryError(f"{resolved} is not a directory.")
 
+    root_paths = _resolve_roots(allowed_roots)
     entries: list[dict] = []
     try:
         for child in sorted(resolved.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
             try:
                 is_dir = child.is_dir()
+                # Skip a child that resolves (via symlink) outside the roots, so
+                # the listing never even names a path the caller couldn't read.
+                real = child.resolve()
+                if not any(real == r or _is_within(real, r) for r in root_paths):
+                    continue
             except OSError:
                 continue
             entries.append({"name": child.name, "path": str(child), "is_dir": is_dir})

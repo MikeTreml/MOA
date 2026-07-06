@@ -331,6 +331,13 @@ class WorkbenchApiTests(unittest.TestCase):
             response = client.post("/api/images", json={"prompt": "   "})
             self.assertEqual(response.status_code, 400)
 
+    def test_images_endpoint_rejects_bad_size(self):
+        with tempfile.TemporaryDirectory() as appdata:
+            client = self.make_client(appdata)
+            response = client.post("/api/images", json={"prompt": "a cat", "size": "huge"})
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("size", response.text.lower())
+
     def test_images_endpoint_surfaces_provider_failure_as_502(self):
         with tempfile.TemporaryDirectory() as appdata:
             client = self.make_client(appdata)
