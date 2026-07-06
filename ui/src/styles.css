@@ -731,7 +731,12 @@ code {
 }
 
 .roleButtons {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* Worker stepper gets a full-width row; Aggregator + Evaluator share the next. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.roleButtons .workerStepper {
+  grid-column: 1 / -1;
 }
 
 .roleButtons button {
@@ -1377,13 +1382,13 @@ code {
 
 /* Worker count stepper (Models tab) */
 .workerStepper {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
+  display: flex;
+  align-items: stretch;
+  min-height: 38px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
   overflow: hidden;
-  background: var(--surface-1);
+  background: var(--surface-2);
 }
 
 .workerStepper.roleActive {
@@ -1392,27 +1397,33 @@ code {
 }
 
 .workerStepper button {
-  width: 26px;
+  flex: 0 0 40px;
   border: none;
   background: transparent;
-  color: var(--text-2);
-  font-size: 16px;
+  color: var(--text);
+  font-size: 20px;
   line-height: 1;
   cursor: pointer;
-  padding: 4px 0;
+}
+
+.workerStepper button:hover:not(:disabled) {
+  background: var(--surface-1);
 }
 
 .workerStepper button:disabled {
-  opacity: 0.35;
+  opacity: 0.3;
   cursor: default;
 }
 
 .workerStepper .stepperLabel {
+  flex: 1;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
+  gap: 6px;
   padding: 0 6px;
   font-size: 13px;
+  font-weight: 600;
   white-space: nowrap;
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
