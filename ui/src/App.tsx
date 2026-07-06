@@ -317,12 +317,27 @@ function App() {
     setDirty(false);
   }
 
-  function toggleWorker(model: string) {
+  // Workers are a multiset: the same model can appear several times (N parallel
+  // instances), so mutations are add-one / remove-one, never a toggle.
+  function workerCount(model: string): number {
+    return profile ? profile.worker_models.filter((m) => m === model).length : 0;
+  }
+
+  function addWorker(model: string) {
     if (!profile || !model) return;
-    const current = profile.worker_models.filter(Boolean);
-    const exists = current.includes(model);
-    const next = exists ? current.filter((item) => item !== model) : [...current, model];
-    updateProfile({ worker_models: next.length ? next : [model] });
+    updateProfile({ worker_models: [...profile.worker_models.filter(Boolean), model] });
+  }
+
+  function removeWorker(model: string) {
+    if (!profile) return;
+    const index = profile.worker_models.indexOf(model);
+    if (index === -1) return;
+    updateProfile({ worker_models: profile.worker_models.filter((_, i) => i !== index) });
+  }
+
+  function removeWorkerAt(index: number) {
+    if (!profile) return;
+    updateProfile({ worker_models: profile.worker_models.filter((_, i) => i !== index) });
   }
 
   function addCloudModel() {
@@ -895,7 +910,7 @@ function App() {
               <div className="modelTable">
                 {llmModels.map((model, index) => {
                   const key = modelKey(model);
-                  const isWorker = profile.worker_models.includes(key);
+                  const count = workerCount(key);
                   const isAggregator = profile.aggregator_model === key;
                   const isEvaluator = profile.evaluator_model === key;
                   return (
@@ -907,9 +922,11 @@ function App() {
                         <code>{key}</code>
                       </div>
                       <div className="roleButtons">
-                        <button type="button" className={isWorker ? "roleActive" : ""} onClick={() => toggleWorker(key)} aria-pressed={isWorker}>
-                          <Users size={14} /> Worker
-                        </button>
+                        <span className={`workerStepper ${count > 0 ? "roleActive" : ""}`} title="Number of parallel worker instances of this model">
+                          <button type="button" onClick={() => removeWorker(key)} disabled={count === 0} aria-label={`Remove a ${key} worker`}>−</button>
+                          <span className="stepperLabel"><Users size={14} /> Worker{count > 0 ? ` ×${count}` : ""}</span>
+                          <button type="button" onClick={() => addWorker(key)} aria-label={`Add a ${key} worker`}>+</button>
+                        </span>
                         <button type="button" className={isAggregator ? "roleActive" : ""} onClick={() => updateProfile({ aggregator_model: key })} aria-pressed={isAggregator}>
                           <BrainCircuit size={14} /> Aggregator
                         </button>
@@ -929,7 +946,7 @@ function App() {
               </p>
               <div className="modelTable">
                 {(profile.cloud_models ?? []).map((cloud, index) => {
-                  const isWorker = profile.worker_models.includes(cloud.alias);
+                  const count = workerCount(cloud.alias);
                   const isAggregator = profile.aggregator_model === cloud.alias;
                   const isEvaluator = profile.evaluator_model === cloud.alias;
                   return (
@@ -942,9 +959,11 @@ function App() {
                         <code>{cloud.model || cloud.alias}</code>
                       </div>
                       <div className="roleButtons">
-                        <button type="button" className={isWorker ? "roleActive" : ""} onClick={() => toggleWorker(cloud.alias)} aria-pressed={isWorker}>
-                          <Users size={14} /> Worker
-                        </button>
+                        <span className={`workerStepper ${count > 0 ? "roleActive" : ""}`} title="Number of parallel worker instances of this model">
+                          <button type="button" onClick={() => removeWorker(cloud.alias)} disabled={count === 0} aria-label={`Remove a ${cloud.alias} worker`}>−</button>
+                          <span className="stepperLabel"><Users size={14} /> Worker{count > 0 ? ` ×${count}` : ""}</span>
+                          <button type="button" onClick={() => addWorker(cloud.alias)} aria-label={`Add a ${cloud.alias} worker`}>+</button>
+                        </span>
                         <button type="button" className={isAggregator ? "roleActive" : ""} onClick={() => updateProfile({ aggregator_model: cloud.alias })} aria-pressed={isAggregator}>
                           <BrainCircuit size={14} /> Aggregator
                         </button>
@@ -978,9 +997,10 @@ function App() {
                 </label>
               </div>
               <div className="workerChips">
+                {profile.worker_models.length === 0 && <span className="empty">No workers — add some above.</span>}
                 {profile.worker_models.map((model, index) => (
-                  <button type="button" key={`${model}-${index}`} onClick={() => toggleWorker(model)} title="Remove worker">
-                    {model}
+                  <button type="button" key={`${model}-${index}`} onClick={() => removeWorkerAt(index)} title="Remove this worker">
+                    {model} ✕
                   </button>
                 ))}
               </div>
