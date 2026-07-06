@@ -262,6 +262,58 @@ class GraphExecutionTests(unittest.TestCase):
         self.assertNotIn("prose", steps)       # untaken branch skipped
         self.assertEqual(record.final_output, "JOINED")
 
+    def test_render_template_is_single_pass_no_injection(self):
+        from workbench.workflow import _render_template
+
+        # 'a' produced text that contains a literal {{b}} — it must NOT expand to b.
+        out = _render_template("A: {{a}} B: {{b}}", "IN", {"a": "hello {{b}}", "b": "SECRET"})
+        self.assertEqual(out, "A: hello {{b}} B: SECRET")
+        # {input} and unknown placeholders.
+        self.assertEqual(_render_template("{input} {{missing}}", "X", {}), "X {{missing}}")
+
+    def test_label_matches_is_whole_word(self):
+        from workbench.workflow import _label_matches
+
+        self.assertTrue(_label_matches("code", "please write code here"))
+        self.assertFalse(_label_matches("code", "please decode this"))
+        self.assertFalse(_label_matches("yes", "eyes only"))
+
+    def test_oversized_graph_rejected_without_layout(self):
+        from workbench.schemas import FlowGraph, GraphNode
+        from workbench.graph import MAX_GRAPH_NODES, validate_graph
+
+        g = FlowGraph(nodes=[GraphNode(id=f"n{i}") for i in range(MAX_GRAPH_NODES + 1)], output="n0")
+        errors = validate_graph(g)
+        self.assertTrue(any("too large" in e.lower() for e in errors))
+
+    def test_gate_requires_depends_on(self):
+        from workbench.schemas import FlowGraph, GraphCheck, GraphNode
+        from workbench.graph import validate_graph
+
+        g = FlowGraph(
+            nodes=[
+                GraphNode(id="refine", kind="llm"),
+                GraphNode(id="gate", kind="gate", checks=[GraphCheck(term="q")], loop_to="refine"),
+            ],
+            output="refine",
+        )
+        self.assertTrue(any("depends_on" in e for e in validate_graph(g)))
+
+    def test_nested_gate_in_loop_body_rejected(self):
+        from workbench.schemas import FlowGraph, GraphCheck, GraphNode
+        from workbench.graph import validate_graph
+
+        # Outer gate loops back to 'a'; its body includes inner gate 'g1'.
+        g = FlowGraph(
+            nodes=[
+                GraphNode(id="a", kind="llm"),
+                GraphNode(id="g1", kind="gate", depends_on=["a"], checks=[GraphCheck(term="x")], loop_to="a"),
+                GraphNode(id="g2", kind="gate", depends_on=["g1"], checks=[GraphCheck(term="y")], loop_to="a"),
+            ],
+            output="g1",
+        )
+        self.assertTrue(any("nested gate" in e.lower() for e in validate_graph(g)))
+
     def test_when_node_must_exist(self):
         from workbench.schemas import FlowGraph, GraphNode
         from workbench.graph import validate_graph

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from .schemas import FlowGraph, GraphNode
 
+MAX_GRAPH_NODES = 200
+
 
 def validate_graph(graph: FlowGraph) -> list[str]:
     """Return a list of human-readable problems; empty means the graph is
@@ -15,6 +17,9 @@ def validate_graph(graph: FlowGraph) -> list[str]:
     nodes = graph.nodes
     if not nodes:
         return ["Graph has no nodes."]
+    # Bound the graph so a huge payload can't turn validation/layout into a DoS.
+    if len(nodes) > MAX_GRAPH_NODES:
+        return [f"Graph too large: {len(nodes)} nodes (max {MAX_GRAPH_NODES})."]
 
     ids = [n.id for n in nodes]
     seen: set[str] = set()
@@ -45,19 +50,24 @@ def validate_graph(graph: FlowGraph) -> list[str]:
 
     # The data DAG (depends_on + fanout over) must be acyclic; a gate's loop_to is
     # a control back-edge, not a data dependency, so it is allowed and excluded.
-    if _has_cycle(nodes):
+    cyclic = _has_cycle(nodes)
+    if cyclic:
         errors.append("Graph has a data cycle (dependencies must be acyclic; use a gate's loop_to for loops).")
 
     for node in nodes:
         if node.kind == "gate":
             if not node.checks:
                 errors.append(f"Gate node {node.id!r} needs at least one check.")
+            if not node.depends_on:
+                errors.append(f"Gate node {node.id!r} needs a `depends_on` — the draft it scores.")
             if not node.loop_to:
                 errors.append(f"Gate node {node.id!r} needs a `loop_to` node to revise.")
             elif node.loop_to not in id_set:
                 errors.append(f"Gate node {node.id!r} loops to unknown node {node.loop_to!r}.")
-            elif not _has_cycle(nodes) and node.loop_to not in ancestors(nodes, node.id):
+            elif not cyclic and node.loop_to not in ancestors(nodes, node.id):
                 errors.append(f"Gate node {node.id!r} must loop back to one of its ancestors.")
+            elif not cyclic and any(n.kind == "gate" for n in loop_body(nodes, node)):
+                errors.append(f"Gate node {node.id!r} has a nested gate in its loop body (unsupported).")
             if node.max_loops < 1:
                 errors.append(f"Gate node {node.id!r} needs max_loops >= 1.")
 
