@@ -1087,9 +1087,8 @@ function App() {
               <label>
                 Provider
                 <select value={profile.provider} onChange={(event) => updateProfile({ provider: event.target.value })}>
-                  <option value="lmstudio">LM Studio</option>
+                  <option value="openai-compatible">OpenAI-compatible (llama.cpp)</option>
                   <option value="omp">OMP</option>
-                  <option value="openai-compatible">OpenAI-compatible</option>
                   <option value="openai">OpenAI</option>
                   <option value="together">Together</option>
                   <option value="atomic">Atomic placeholder</option>

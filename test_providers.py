@@ -4,15 +4,29 @@ from unittest.mock import patch
 
 
 class ProviderConfigTests(unittest.TestCase):
-    def test_lmstudio_uses_local_openai_compatible_defaults(self):
+    def test_default_provider_is_openai_compatible_llamacpp(self):
+        from providers import get_provider_config
+
+        # No MOA_PROVIDER set -> defaults to openai-compatible at the llama.cpp URL.
+        with patch.dict(os.environ, {}, clear=True):
+            config = get_provider_config()
+
+        self.assertEqual(config.provider, "openai-compatible")
+        self.assertEqual(config.base_url, "http://127.0.0.1:1235/v1")
+
+    def test_lmstudio_provider_is_no_longer_supported(self):
         from providers import get_provider_config
 
         with patch.dict(os.environ, {"MOA_PROVIDER": "lmstudio"}, clear=True):
-            config = get_provider_config()
+            with self.assertRaisesRegex(ValueError, "Unsupported"):
+                get_provider_config()
 
-        self.assertEqual(config.provider, "lmstudio")
-        self.assertEqual(config.base_url, "http://127.0.0.1:1234/v1")
-        self.assertEqual(config.api_key, "lm-studio")
+    def test_moa_base_url_overrides_default(self):
+        from providers import get_provider_config
+
+        with patch.dict(os.environ, {"MOA_BASE_URL": "http://192.168.1.9:1234/v1"}, clear=True):
+            config = get_provider_config()
+        self.assertEqual(config.base_url, "http://192.168.1.9:1234/v1")
 
     def test_omp_requires_a_base_url_and_prefers_omp_api_key(self):
         from providers import get_provider_config
@@ -209,7 +223,7 @@ class ClientCacheTests(unittest.TestCase):
             constructed.append(obj)
             return obj
 
-        with patch.dict(os.environ, {"MOA_PROVIDER": "lmstudio"}, clear=True), patch(
+        with patch.dict(os.environ, {"MOA_PROVIDER": "openai-compatible"}, clear=True), patch(
             "providers.openai.OpenAI", side_effect=fake_openai
         ):
             first = providers.create_client()
@@ -228,7 +242,7 @@ class ClientCacheTests(unittest.TestCase):
             captured.update(kwargs)
             return object()
 
-        with patch.dict(os.environ, {"MOA_PROVIDER": "lmstudio"}, clear=True), patch(
+        with patch.dict(os.environ, {"MOA_PROVIDER": "openai-compatible"}, clear=True), patch(
             "providers.openai.OpenAI", side_effect=fake_openai
         ):
             providers.create_client()

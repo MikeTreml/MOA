@@ -10,7 +10,7 @@ from providers import (
     stream_text_chunks,
 )
 
-provider = os.environ.get("MOA_PROVIDER", "lmstudio")
+provider = os.environ.get("MOA_PROVIDER", "openai-compatible")
 user_prompt = os.environ.get("MOA_PROMPT", "What are 3 fun things to do in SF?")
 reference_models = get_default_reference_models(provider)
 aggregator_model = get_default_model(provider)

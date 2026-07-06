@@ -28,7 +28,7 @@ This demo queries reference models, then passes the results to the aggregate mod
 
 """
 
-default_provider = "lmstudio"
+default_provider = "openai-compatible"
 default_model = get_default_model(default_provider)
 default_reference_models = get_default_reference_models(default_provider)
 
@@ -99,7 +99,7 @@ def main(
     Args:
     - model (str): The primary model identifier used for generating the final response. This model aggregates the outputs from the reference models to produce the final response.
     - reference_models (List[str]): A list of model identifiers that are used as references in the initial rounds of generation. These models provide diverse perspectives and are aggregated by the primary model.
-    - provider (str): Backend provider to use. Supported values: lmstudio, together, openai, omp, openai-compatible, atomic.
+    - provider (str): Backend provider to use. Supported values: openai-compatible, together, openai, omp, atomic.
     - temperature (float): A parameter controlling the randomness of the response generation. Higher values result in more varied outputs. The default value is 0.7.
     - max_tokens (int): The maximum number of tokens that can be generated in the response. This limits the length of the output from each model per turn. Default is 2048.
     - rounds (int): The number of processing rounds to refine the responses. In each round, the input is processed through the reference models, and their outputs are aggregated. Default is 1.
