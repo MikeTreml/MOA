@@ -9,7 +9,7 @@ from loguru import logger
 
 
 DEBUG = int(os.environ.get("DEBUG", "0"))
-LM_STUDIO_BASE_URL = "http://127.0.0.1:1234/v1"
+DEFAULT_BASE_URL = "http://127.0.0.1:1235/v1"  # llama.cpp / OpenAI-compatible
 TOGETHER_BASE_URL = "https://api.together.xyz/v1"
 
 # Per-request wall-clock ceiling so a hung server can't stall a call for the
@@ -75,17 +75,16 @@ def _first_env(*names: str, default: str | None = None) -> str | None:
 
 def _normalize_provider(provider: str | None) -> str:
     raw = provider or os.environ.get("MOA_PROVIDER") or os.environ.get("MOA_BACKEND")
-    normalized = (raw or "lmstudio").strip().lower().replace("-", "").replace("_", "")
+    normalized = (raw or "openai-compatible").strip().lower().replace("-", "").replace("_", "")
     aliases = {
-        "lmstudio": "lmstudio",
-        "lm": "lmstudio",
-        "local": "lmstudio",
-        "together": "together",
-        "togetherai": "together",
-        "openai": "openai",
         "openaicompatible": "openai-compatible",
         "compatible": "openai-compatible",
         "custom": "openai-compatible",
+        "local": "openai-compatible",
+        "llamacpp": "openai-compatible",
+        "together": "together",
+        "togetherai": "together",
+        "openai": "openai",
         "omp": "omp",
         "atomic": "atomic",
         "atomicagents": "atomic",
@@ -94,8 +93,8 @@ def _normalize_provider(provider: str | None) -> str:
         return aliases[normalized]
     except KeyError as exc:
         raise ValueError(
-            f"Unsupported MOA_PROVIDER={raw!r}. Use lmstudio, together, openai, omp, "
-            "openai-compatible, or atomic."
+            f"Unsupported MOA_PROVIDER={raw!r}. Use openai-compatible, together, "
+            "openai, omp, or atomic."
         ) from exc
 
 
@@ -106,20 +105,15 @@ def get_provider_config(
 ) -> ProviderConfig:
     provider_name = _normalize_provider(provider)
 
-    if provider_name == "lmstudio":
+    if provider_name == "openai-compatible":
+        # The default provider — any OpenAI-compatible server (llama.cpp etc.).
         return ProviderConfig(
             provider=provider_name,
             base_url=base_url or _first_env(
-                "MOA_BASE_URL",
-                "LM_STUDIO_BASE_URL",
-                "LMSTUDIO_BASE_URL",
-                default=LM_STUDIO_BASE_URL,
+                "MOA_BASE_URL", "OPENAI_BASE_URL", default=DEFAULT_BASE_URL
             ),
             api_key=api_key or _first_env(
-                "MOA_API_KEY",
-                "LM_STUDIO_API_KEY",
-                "LMSTUDIO_API_KEY",
-                default="lm-studio",
+                "MOA_API_KEY", "OPENAI_API_KEY", default="openai-compatible"
             ),
         )
 
@@ -137,12 +131,10 @@ def get_provider_config(
             api_key=api_key or _first_env("MOA_API_KEY", "OPENAI_API_KEY", default=""),
         )
 
-    if provider_name in {"omp", "openai-compatible"}:
+    if provider_name == "omp":
         resolved_base_url = base_url or _first_env("MOA_BASE_URL", "OMP_BASE_URL", "OPENAI_BASE_URL")
         if not resolved_base_url:
-            raise ValueError(
-                f"MOA_PROVIDER={provider_name} requires MOA_BASE_URL or OMP_BASE_URL."
-            )
+            raise ValueError("MOA_PROVIDER=omp requires MOA_BASE_URL or OMP_BASE_URL.")
         return ProviderConfig(
             provider=provider_name,
             base_url=resolved_base_url,
@@ -210,7 +202,7 @@ def parse_model_list(models: str | Iterable[str]) -> list[str]:
 
 _ATOMIC_MESSAGE = (
     "Atomic Agents provider placeholder: wire your Atomic Agents graph in "
-    "atomic_agents_adapter.py, or use MOA_PROVIDER=lmstudio/omp/openai-compatible."
+    "atomic_agents_adapter.py, or use MOA_PROVIDER=openai-compatible/omp/together."
 )
 
 

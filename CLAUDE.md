@@ -57,7 +57,7 @@ Note: constructing a real OpenAI/httpx client triggers SSL init that is blocked 
 
 **Everything LLM goes through `providers.py`.** Nothing else should construct an OpenAI client directly. Key functions: `get_provider_config`, `create_client` / `create_async_client`, `generate_chat_completion[_async]`, `generate_text_with_retries`, `generate_image` (text-to-image via `/v1/images/generations`), `get_default_model`, `get_default_reference_models`, `get_default_image_model`.
 
-Provider is chosen by `MOA_PROVIDER` (aliases are normalized in `_normalize_provider`): `lmstudio` (default), `together`, `openai`, `omp`, `openai-compatible`, `atomic`.
+Provider is chosen by `MOA_PROVIDER` (aliases normalized in `_normalize_provider`): `openai-compatible` (default; aliases `local`/`llamacpp`/`custom`), `together`, `openai`, `omp`, `atomic`. There is no `lmstudio` provider — LM Studio is just an OpenAI-compatible server, so use `openai-compatible` with its base URL.
 
 Config resolves from env via a first-match helper, so these matter:
 - `MOA_PROVIDER`, `MOA_MODEL`, `MOA_REFERENCE_MODELS` (comma-separated), `MOA_BASE_URL`, `MOA_API_KEY`
