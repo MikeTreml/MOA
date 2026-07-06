@@ -269,7 +269,10 @@ def create_app() -> FastAPI:
     def graph_validate(request: GraphCheckRequest):
         """Authoring helper: report problems and return a tidy auto-layout (lanes
         = dependency depth) the author can accept or nudge. Pure — runs nothing."""
-        return {"errors": validate_graph(request.graph), "graph": auto_layout(request.graph)}
+        errors = validate_graph(request.graph)
+        # Don't run layout on a rejected (e.g. oversized) graph.
+        graph = request.graph if errors else auto_layout(request.graph)
+        return {"errors": errors, "graph": graph}
 
     @app.get("/api/flows")
     def flows():
@@ -426,6 +429,10 @@ def create_app() -> FastAPI:
                 continue
             try:
                 fresh = storage.get_file_change(change.id)
+                # Re-check the authoritative status (the run's inlined copy may be
+                # stale if the change was applied/rejected via another endpoint).
+                if fresh.status != "proposed":
+                    continue
                 if action == "apply":
                     storage.save_file_change(apply_file_change(fresh))
                 else:

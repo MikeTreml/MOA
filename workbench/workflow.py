@@ -334,14 +334,41 @@ async def refine(
     return output, _trace("refiner", "Revise draft", model, prompt, output, step_id=step_id, started_at=started)
 
 
+_PLACEHOLDER_RE = re.compile(r"\{\{([^{}]+)\}\}|\{(input|item)\}")
+
+
+def _label_matches(label: str, value: str) -> str | bool:
+    """Whole-word (case-insensitive) match, so a branch label 'code' matches
+    'code' but not 'decode'/'barcode'. Falls back to substring when the label
+    isn't word-boundable (e.g. contains punctuation)."""
+    label = label.strip().lower()
+    if not label:
+        return True
+    text = value.lower()
+    if re.fullmatch(r"[\w ]+", label):
+        return re.search(r"\b" + re.escape(label) + r"\b", text) is not None
+    return label in text
+
+
 def _render_template(template: str, input_text: str, outputs: dict[str, str], item: str | None = None) -> str:
-    text = template or "{input}"
-    text = text.replace("{input}", input_text)
-    for node_id, value in outputs.items():
-        text = text.replace("{{" + node_id + "}}", value)
-    if item is not None:
-        text = text.replace("{item}", item)
-    return text
+    if not template:
+        return input_text
+
+    def _sub(match: "re.Match") -> str:
+        node_id = match.group(1)
+        simple = match.group(2)
+        if node_id is not None:
+            # Unknown node -> leave the placeholder literal rather than blanking.
+            return outputs.get(node_id.strip(), match.group(0))
+        if simple == "input":
+            return input_text
+        if simple == "item":
+            return item if item is not None else match.group(0)
+        return match.group(0)
+
+    # Single pass: substituted values are NOT re-scanned, so a node whose output
+    # happens to contain "{{other}}" can't inject another node's output.
+    return _PLACEHOLDER_RE.sub(_sub, template)
 
 
 def _fanout_items(text: str, limit: int = 8) -> list[str]:
@@ -453,7 +480,7 @@ async def run_graph_workflow(
             if node.when_node in skipped:
                 return True
             value = outputs.get(node.when_node, "")
-            if node.when_equals and node.when_equals.lower() not in value.lower():
+            if node.when_equals and not _label_matches(node.when_equals, value):
                 return True
         deps = list(node.depends_on)
         if node.kind == "fanout" and node.over:
@@ -532,6 +559,10 @@ async def run_graph_workflow(
             while not passed and iteration < node.max_loops:
                 iteration += 1
                 for body_node in loop_body(graph.nodes, node):
+                    # Never resurrect a node an untaken branch already skipped.
+                    # (Validation guarantees no nested gate in the loop body.)
+                    if body_node.id in skipped:
+                        continue
                     await run_node(body_node, iteration)
                 passed = await run_gate(node, iteration)
             # On exhaustion, proceed best-effort with the latest draft.

@@ -171,6 +171,23 @@ class ImageGenerationTests(unittest.TestCase):
         self.assertEqual(out[0]["url"], "http://img/1.png")
         self.assertEqual(len(calls), 2)  # first with response_format, retry without
 
+    def test_generate_image_does_not_retry_non_format_errors(self):
+        import providers
+
+        calls = []
+
+        class _Client:
+            class images:
+                @staticmethod
+                def generate(**kwargs):
+                    calls.append(kwargs)
+                    raise RuntimeError("401 unauthorized")  # not a response_format issue
+
+        with patch("providers._sync_client_from_config", return_value=_Client()):
+            with self.assertRaises(RuntimeError):
+                providers.generate_image("a cat", model="sd", provider="openai-compatible", base_url="http://x/v1")
+        self.assertEqual(len(calls), 1)  # no second (billed) attempt
+
     def test_generate_image_atomic_placeholder(self):
         import providers
 

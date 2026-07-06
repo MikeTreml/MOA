@@ -241,13 +241,18 @@ function App() {
     );
   }, []);
 
-  // Sync the graph editor buffer when the active profile changes (not on every
-  // keystroke, so edits aren't clobbered).
-  useEffect(() => {
-    setGraphText(profile?.graph ? JSON.stringify(profile.graph, null, 2) : "");
-    setGraphErrors([]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.name]);
+  function onGraphTextChange(value: string) {
+    // JSON mode writes through to profile.graph on every VALID parse, so the
+    // visual view and validation never operate on stale content, and toggling
+    // modes can't silently drop edits.
+    setGraphText(value);
+    try {
+      updateProfile({ graph: JSON.parse(value) });
+      setGraphErrors([]);
+    } catch {
+      /* keep typing; invalid JSON just isn't written through yet */
+    }
+  }
 
   function applySeed(seedJson: string) {
     setGraphText(seedJson);
@@ -321,6 +326,8 @@ function App() {
     setProfile(next);
     setPlan(null);
     setLoadResults([]);
+    setGraphText(next.graph ? JSON.stringify(next.graph, null, 2) : "");
+    setGraphErrors([]);
     setDirty(false);
   }
 
@@ -569,7 +576,11 @@ function App() {
   }
 
   function imageSrc(image: GeneratedImage): string {
-    return image.b64_json ? `data:image/png;base64,${image.b64_json}` : image.url ?? "";
+    if (image.b64_json) return `data:image/png;base64,${image.b64_json}`;
+    const url = image.url ?? "";
+    // Only allow safe schemes — a compromised provider could return a
+    // javascript: URL that would run when the download anchor is clicked.
+    return /^(https?:|data:image\/)/i.test(url) ? url : "";
   }
 
   async function browseTo(path: string | null) {
@@ -1237,7 +1248,7 @@ function App() {
                     className="graphText"
                     spellCheck={false}
                     value={graphText}
-                    onChange={(event) => setGraphText(event.target.value)}
+                    onChange={(event) => onGraphTextChange(event.target.value)}
                     placeholder='{ "nodes": [...], "output": "..." }'
                   />
                 )}

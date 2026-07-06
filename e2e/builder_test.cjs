@@ -57,14 +57,39 @@ async function main() {
   // Special edges (fanout "over") render as dashed lines.
   const overEdges = await page.locator(".builderEdges .edge.over").count();
 
+  // Drag a node and confirm it actually repositions (lane/order snap).
+  const planNode = page.locator(".builderNode:has(.bnId:text-is('plan'))");
+  const before = await planNode.evaluate((el) => el.style.left);
+  const box = await planNode.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 430, box.y + box.height / 2 + 130, { steps: 6 });
+  await page.mouse.up();
+  const after = await planNode.evaluate((el) => el.style.left);
+  const dragMoved = before !== after;
+
+  // Rename the fanout source 'plan' -> 'planX'; the 'over' edge must survive
+  // (cascade), i.e. references are NOT orphaned.
+  await planNode.click();
+  const idInput = page.locator(".nodeEditor input").first();
+  await idInput.fill("planX");
+  await idInput.press("Enter");
+  await page.waitForTimeout(150);
+  const overEdgesAfterRename = await page.locator(".builderEdges .edge.over").count();
+  const renamedNode = await page.locator(".builderNode:has(.bnId:text-is('planX'))").count();
+
   await browser.close();
 
   console.log("initial nodes :", initial);
   console.log("editor opened :", editorOpened);
   console.log("after add     :", afterAdd);
   console.log("over edges    :", overEdges);
+  console.log("drag moved    :", dragMoved);
+  console.log("renamed node  :", renamedNode, "| over edge kept:", overEdgesAfterRename);
 
-  const ok = initial === 3 && editorOpened && afterAdd === 4 && overEdges >= 1;
+  const ok =
+    initial === 3 && editorOpened && afterAdd === 4 && overEdges >= 1 &&
+    dragMoved && renamedNode === 1 && overEdgesAfterRename >= 1;
   console.log("RESULT:", ok ? "PASS" : "FAIL");
   process.exit(ok ? 0 : 1);
 }

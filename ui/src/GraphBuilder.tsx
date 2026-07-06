@@ -79,6 +79,22 @@ export function GraphBuilder({
     updateNode(target, { depends_on: [...(t.depends_on ?? []), source] });
   }
 
+  function renameNode(oldId: string, rawNewId: string) {
+    const newId = rawNewId.trim();
+    if (!newId || newId === oldId || nodes.some((n) => n.id === newId)) return;
+    // Cascade the rename to every reference so wiring isn't silently orphaned.
+    const next = nodes.map((n) => ({
+      ...n,
+      id: n.id === oldId ? newId : n.id,
+      depends_on: (n.depends_on ?? []).map((d) => (d === oldId ? newId : d)),
+      over: n.over === oldId ? newId : n.over,
+      loop_to: n.loop_to === oldId ? newId : n.loop_to,
+      when_node: n.when_node === oldId ? newId : n.when_node
+    }));
+    commit(next, graph.output === oldId ? newId : graph.output);
+    setSelectedId(newId);
+  }
+
   function removeDependency(source: string, target: string) {
     const t = nodes.find((n) => n.id === target);
     if (!t) return;
@@ -92,15 +108,17 @@ export function GraphBuilder({
       return;
     }
     dragRef.current = { id };
-    (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
+    // Capture on the node itself so it keeps receiving move/up even if the
+    // cursor outruns it or leaves the canvas — the handlers live on the node.
+    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
     setSelectedId(id);
   }
 
-  function onCanvasPointerMove(event: React.PointerEvent) {
+  function onNodePointerMove(event: React.PointerEvent) {
     if (!dragRef.current || !canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const lane = Math.max(0, Math.round((event.clientX - rect.left - NODE_W / 2) / COL));
-    const order = Math.max(0, Math.round((event.clientY - rect.top - NODE_H / 2) / ROW));
+    const lane = Math.max(0, Math.round((event.clientX - rect.left + canvasRef.current.scrollLeft - NODE_W / 2) / COL));
+    const order = Math.max(0, Math.round((event.clientY - rect.top + canvasRef.current.scrollTop - NODE_H / 2) / ROW));
     const node = nodes.find((n) => n.id === dragRef.current!.id);
     if (node && (node.lane !== lane || node.order !== order)) {
       updateNode(node.id, { lane, order });
@@ -131,9 +149,6 @@ export function GraphBuilder({
         className="builderCanvas"
         ref={canvasRef}
         style={{ width, height }}
-        onPointerMove={onCanvasPointerMove}
-        onPointerUp={endDrag}
-        onPointerLeave={endDrag}
         onClick={(e) => { if (e.target === canvasRef.current) { setSelectedId(null); setConnectFrom(null); } }}
       >
         <svg className="builderEdges" width={width} height={height}>
@@ -179,6 +194,8 @@ export function GraphBuilder({
               className={`builderNode ${node.kind} ${selectedId === node.id ? "selected" : ""} ${connectFrom ? "targetable" : ""}`}
               style={{ left: a.x, top: a.y, width: NODE_W }}
               onPointerDown={(e) => onNodePointerDown(e, node.id)}
+              onPointerMove={onNodePointerMove}
+              onPointerUp={endDrag}
             >
               <div className="bnHead">
                 <span className="bnKind">{node.kind}</span>
@@ -206,6 +223,7 @@ export function GraphBuilder({
           models={models}
           isOutput={graph.output === selected.id}
           onChange={(patch) => updateNode(selected.id, patch)}
+          onRename={(newId) => renameNode(selected.id, newId)}
           onSetOutput={() => commit(nodes, selected.id)}
           onDelete={() => deleteNode(selected.id)}
         />
@@ -220,6 +238,7 @@ function NodeEditor({
   models,
   isOutput,
   onChange,
+  onRename,
   onSetOutput,
   onDelete
 }: {
@@ -228,11 +247,15 @@ function NodeEditor({
   models: LmModel[];
   isOutput: boolean;
   onChange: (patch: Partial<GraphNode>) => void;
+  onRename: (newId: string) => void;
   onSetOutput: () => void;
   onDelete: () => void;
 }) {
   const others = nodes.filter((n) => n.id !== node.id);
   const checks = node.checks ?? [];
+  // Local buffer so renaming commits on blur/Enter (cascading to references)
+  // rather than per-keystroke, which would orphan wiring and remount the editor.
+  const [idDraft, setIdDraft] = useState(node.id);
   return (
     <div className="nodeEditor">
       <div className="sectionHeader">
@@ -247,7 +270,13 @@ function NodeEditor({
         </div>
       </div>
       <div className="formGrid">
-        <label>Id<input value={node.id} onChange={(e) => onChange({ id: e.target.value.trim() })} /></label>
+        <label>Id<input
+          value={idDraft}
+          onChange={(e) => setIdDraft(e.target.value)}
+          onBlur={() => onRename(idDraft)}
+          onKeyDown={(e) => { if (e.key === "Enter") onRename(idDraft); }}
+          title="Renaming updates every reference; commits on blur/Enter"
+        /></label>
         <label>Title<input value={node.title ?? ""} onChange={(e) => onChange({ title: e.target.value })} /></label>
         <label>
           Kind

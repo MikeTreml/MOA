@@ -148,15 +148,18 @@ export function useRunActivity(
       source.addEventListener("step", (event) => {
         const data = safeParse<any>((event as MessageEvent).data);
         if (!data) return;
-        // Omit startedAt so the merge preserves the client stamp from
-        // stage_start; stamp the end now so the timer freezes on completion.
+        // Prefer the server's authoritative started_at/ended_at for a completed
+        // step: they're stable, so a reconnect that replays this event restores
+        // the real duration instead of the client re-stamping it to "now". The
+        // client stage_start stamp only drove the live timer before completion.
         upsert(data.id, {
           stage: data.stage,
           title: data.title,
           model: data.model,
           status: "complete",
           output: data.output,
-          endedAt: new Date().toISOString()
+          ...(data.started_at ? { startedAt: data.started_at } : {}),
+          endedAt: data.ended_at ?? new Date().toISOString()
         });
       });
 

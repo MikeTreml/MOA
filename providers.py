@@ -378,8 +378,14 @@ def generate_image(
         kwargs["model"] = chosen
     try:
         response = client.images.generate(response_format="b64_json", **kwargs)
-    except Exception:
-        # Some servers reject response_format (or b64) — retry with plain args.
+    except Exception as exc:
+        # Only retry when the server specifically rejected response_format/b64 —
+        # not on auth/rate-limit/network errors (which would double-bill and mask
+        # the real error). TypeError = SDK rejected the kwarg.
+        message = str(exc).lower()
+        rejected_format = isinstance(exc, TypeError) or "response_format" in message or "b64_json" in message
+        if not rejected_format:
+            raise
         response = client.images.generate(**kwargs)
     images = []
     for item in getattr(response, "data", None) or []:
