@@ -45,24 +45,9 @@ async function request<T>(path: string, init?: RequestInit, retry = true): Promi
 }
 
 export const api = {
-  status: () => request<LmStudioStatus>("/api/lmstudio/status"),
+  status: () => request<LmStudioStatus>("/api/status"),
   models: () => request<{ models: LmModel[]; loaded: Array<Record<string, unknown>> }>("/api/models"),
   providerPresets: () => request<{ presets: ProviderPreset[] }>("/api/provider-presets"),
-  modelPlan: (memoryCapGb: number, models?: LmModel[]) =>
-    request<ModelPlan>("/api/model-plan", {
-      method: "POST",
-      body: JSON.stringify({ memory_cap_gb: memoryCapGb, models })
-    }),
-  loadPlan: (plan: ModelPlan) =>
-    request<{ results: Array<{ model: string; ok: boolean; stdout: string; stderr: string }> }>("/api/models/load-plan", {
-      method: "POST",
-      body: JSON.stringify({ plan })
-    }),
-  loadModels: (models: string[]) =>
-    request<{ results: Array<{ model: string; ok: boolean; stdout: string; stderr: string }> }>("/api/models/load-plan", {
-      method: "POST",
-      body: JSON.stringify({ models })
-    }),
   profiles: () => request<{ profiles: Profile[]; active: string }>("/api/profiles"),
   saveProfile: (profile: Profile) =>
     request<Profile>("/api/profiles", { method: "POST", body: JSON.stringify(profile) }),

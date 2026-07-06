@@ -26,12 +26,11 @@ from .file_safety import (
 )
 from providers import generate_image
 
-from .lmstudio import list_models, load_models, server_status
+from .provider_models import list_models, server_status
 from .graph import auto_layout, validate_graph
-from .model_planner import plan_models
 from .provider_presets import provider_presets
 from .run_registry import RunRegistry, RunSession
-from .schemas import Evaluation, FlowGraph, ModelPlan, Profile, RunRecord, RunRequest
+from .schemas import Evaluation, FlowGraph, Profile, RunRecord, RunRequest
 from .schemas import new_id
 from .storage import WorkbenchStorage
 from .workflow import run_workflow
@@ -39,16 +38,6 @@ from .workflow import run_workflow
 
 def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
-
-
-class ModelPlanRequest(BaseModel):
-    memory_cap_gb: float = 80
-    models: list[dict[str, Any]] | None = None
-
-
-class LoadPlanRequest(BaseModel):
-    models: list[str] = Field(default_factory=list)
-    plan: ModelPlan | None = None
 
 
 class FileReadRequest(BaseModel):
@@ -133,33 +122,23 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    @app.get("/api/lmstudio/status")
-    def lmstudio_status():
+    @app.get("/api/status")
+    def status():
+        """Reachability of the ACTIVE profile's provider endpoint (any
+        OpenAI-compatible server), probed via its /v1/models."""
         profile = storage.get_active_profile()
         return server_status(profile.base_url)
 
     @app.get("/api/models")
     def models():
+        """Models the ACTIVE provider actually serves (from its /v1/models),
+        so the list matches the endpoint the run will hit."""
         profile = storage.get_active_profile()
-        return {"models": list_models(), "loaded": server_status(profile.base_url)["loaded_models"]}
+        return {"models": list_models(profile.base_url), "loaded": []}
 
     @app.get("/api/provider-presets")
     def presets():
         return {"presets": provider_presets()}
-
-    @app.post("/api/model-plan")
-    def model_plan(request: ModelPlanRequest):
-        return plan_models(request.models or list_models(), request.memory_cap_gb)
-
-    @app.post("/api/models/load-plan")
-    def load_plan(request: LoadPlanRequest):
-        model_keys = request.models
-        if request.plan:
-            model_keys = request.plan.worker_models + [
-                request.plan.aggregator_model,
-                request.plan.evaluator_model,
-            ]
-        return {"results": load_models([model for model in model_keys if model])}
 
     @app.get("/api/profiles")
     def profiles():

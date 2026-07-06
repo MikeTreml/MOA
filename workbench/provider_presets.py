@@ -6,15 +6,15 @@ from .schemas import ProviderPreset
 def provider_presets() -> list[ProviderPreset]:
     return [
         ProviderPreset(
-            id="lmstudio-local",
-            name="LM Studio Local",
-            provider="lmstudio",
-            base_url="http://127.0.0.1:1234/v1",
-            worker_models=["llama-3.2-1b-instruct", "llama-3.2-1b-instruct"],
-            aggregator_model="llama-3.2-1b-instruct",
-            evaluator_model="llama-3.2-1b-instruct",
-            env_keys=["LM_STUDIO_API_KEY optional"],
-            notes=["Uses the local LM Studio OpenAI-compatible server and lms model planner."],
+            id="llamacpp-local",
+            name="llama.cpp",
+            provider="openai-compatible",
+            base_url="http://127.0.0.1:1235/v1",
+            worker_models=["qwen-3b", "qwen-3b"],
+            aggregator_model="qwen-3b",
+            evaluator_model="qwen-3b",
+            env_keys=["MOA_BASE_URL to point at your server"],
+            notes=["An OpenAI-compatible llama.cpp server. Model names are the aliases it reports at /v1/models."],
         ),
         ProviderPreset(
             id="omp-chatgpt-claude",

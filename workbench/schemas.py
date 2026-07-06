@@ -22,6 +22,13 @@ def default_allowed_roots() -> list[str]:
     return [str(Path(__file__).resolve().parents[1])]
 
 
+def default_base_url() -> str:
+    # An OpenAI-compatible server (llama.cpp by default); override with MOA_BASE_URL.
+    import os
+
+    return os.environ.get("MOA_BASE_URL", "http://127.0.0.1:1235/v1")
+
+
 class ModelInfo(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
@@ -61,16 +68,14 @@ class ProviderPreset(BaseModel):
 
 
 class Profile(BaseModel):
-    name: str = "Default LM Studio"
-    provider: str = "lmstudio"
-    base_url: str = "http://127.0.0.1:1234/v1"
+    name: str = "llama.cpp"
+    provider: str = "openai-compatible"
+    base_url: str = Field(default_factory=default_base_url)
     memory_cap_gb: float = 80
     workflow: Literal["hybrid", "parallel_subtask", "iterative_evaluator", "graph"] = "hybrid"
-    worker_models: list[str] = Field(
-        default_factory=lambda: ["llama-3.2-1b-instruct", "llama-3.2-1b-instruct"]
-    )
-    aggregator_model: str = "llama-3.2-1b-instruct"
-    evaluator_model: str = "llama-3.2-1b-instruct"
+    worker_models: list[str] = Field(default_factory=lambda: ["qwen-3b", "qwen-3b"])
+    aggregator_model: str = "qwen-3b"
+    evaluator_model: str = "qwen-3b"
     image_model: str = ""
     max_iterations: int = 2
     allowed_roots: list[str] = Field(default_factory=default_allowed_roots)
