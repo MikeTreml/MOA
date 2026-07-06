@@ -376,21 +376,26 @@ def _fanout_items(text: str, limit: int = 8) -> list[str]:
     inside a JSON object, or non-empty lines. Capped so a bad upstream output
     can't spawn an unbounded number of parallel calls."""
     items: Any = None
+    parsed_a_list = False
     # A bare JSON array (extract_json only finds {...} objects, so handle [...] here).
     try:
         direct = json.loads(text.strip())
         if isinstance(direct, list):
-            items = direct
+            items, parsed_a_list = direct, True
         elif isinstance(direct, dict):
-            items = next((v for v in direct.values() if isinstance(v, list)), None)
+            found = next((v for v in direct.values() if isinstance(v, list)), None)
+            if found is not None:
+                items, parsed_a_list = found, True
     except (json.JSONDecodeError, ValueError):
         pass
     if items is None:
         parsed = extract_json(text)
         if isinstance(parsed, list):
-            items = parsed
+            items, parsed_a_list = parsed, True
         elif isinstance(parsed, dict):
-            items = next((v for v in parsed.values() if isinstance(v, list)), None)
+            found = next((v for v in parsed.values() if isinstance(v, list)), None)
+            if found is not None:
+                items, parsed_a_list = found, True
     if items is None:
         items = [line for line in text.splitlines() if line.strip()]
     result: list[str] = []
@@ -399,7 +404,12 @@ def _fanout_items(text: str, limit: int = 8) -> list[str]:
             result.append(str(item.get("prompt") or item.get("title") or json.dumps(item)))
         else:
             result.append(str(item))
-    return result[:limit] or [text]
+    result = result[:limit]
+    # A parsed-but-empty list means "no items" (0 instances); only fall back to
+    # the whole blob when we couldn't find a list at all and there's some text.
+    if not result and not parsed_a_list and text.strip():
+        return [text]
+    return result
 
 
 def _build_gate_prompt(node, outputs: dict[str, str]) -> str:
@@ -458,7 +468,7 @@ async def run_graph_workflow(
     `max_loops` is hit. Reuses the same trace/streaming machinery (via ``emit``)
     and emits each node's saved lane/order so the pop-out renders the authored
     layout; loop iterations stack by incrementing `order`."""
-    from .graph import loop_body, topological_order, validate_graph
+    from .graph import execution_order, loop_body, validate_graph
 
     profile = request.profile
     graph = profile.graph
@@ -549,7 +559,7 @@ async def run_graph_workflow(
         emit(_trace(node.id, title, model, prompt, summary, step_id=step_id, started_at=started, passed=passed))
         return passed
 
-    for node in topological_order(graph.nodes):
+    for node in execution_order(graph.nodes):
         if is_skipped(node):
             skipped.add(node.id)
             continue

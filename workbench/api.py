@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -467,6 +468,8 @@ def create_app() -> FastAPI:
     def images(request: ImageRequest):
         if not request.prompt.strip():
             raise HTTPException(status_code=400, detail="Image prompt is required.")
+        if not re.fullmatch(r"\d{2,4}x\d{2,4}", request.size):
+            raise HTTPException(status_code=400, detail="size must look like WIDTHxHEIGHT, e.g. 1024x1024.")
         profile = storage.get_active_profile()
         try:
             result = generate_image(

@@ -106,6 +106,8 @@ class StorageDurabilityTests(unittest.TestCase):
             storage.save_profile(Profile(name="B"))
             self.assertRaises(ValueError, storage.rename_profile, "A", "B")
             self.assertRaises(KeyError, storage.rename_profile, "Nope", "C")
+            # Case-only collision is rejected (store compares case-insensitively).
+            self.assertRaises(ValueError, storage.rename_profile, "A", "b")
 
     def test_delete_last_profile_refused(self):
         with tempfile.TemporaryDirectory() as root:

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Cpu, Layers3, Network, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
 import type { ActivityStage } from "./types";
 import type { RunActivityState } from "./useRunActivity";
@@ -80,23 +80,25 @@ export function FlowGraph({ activity }: { activity: RunActivityState }) {
   const overall =
     starts.length > 0 ? (running ? now : Math.max(...ends, ...starts)) - Math.min(...starts) : null;
 
-  // A custom-graph flow carries its own saved layout (lane/order); use it when
-  // present so rendering is deterministic. Built-in shapes fall back to the
-  // known-shape column map. This is the data-driven path — no auto-layout guess.
-  const hasSavedLayout = stages.some((s) => typeof s.lane === "number");
-  const byColumn = new Map<number, ActivityStage[]>();
-  stages.forEach((s) => {
-    const c = hasSavedLayout ? s.lane ?? 0 : columnOf(s.stage);
-    if (!byColumn.has(c)) byColumn.set(c, []);
-    byColumn.get(c)!.push(s);
-  });
-  const columns = [...byColumn.keys()]
-    .sort((a, b) => a - b)
-    .map((c) => ({
-      c,
-      nodes: byColumn.get(c)!.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-    }));
-  const hasRefiner = !hasSavedLayout && stages.some((s) => s.stage === "refiner");
+  // A custom-graph flow carries its own saved layout (lane/order); use it per
+  // node when present so rendering is deterministic, falling back to the
+  // known-shape column map for any node lacking a lane. Memoized on `stages` so
+  // the once-a-second timer tick re-renders without re-bucketing/sorting.
+  const hasRefiner = stages.some((s) => typeof s.lane !== "number" && s.stage === "refiner");
+  const columns = useMemo(() => {
+    const byColumn = new Map<number, ActivityStage[]>();
+    stages.forEach((s) => {
+      const c = typeof s.lane === "number" ? s.lane : columnOf(s.stage);
+      if (!byColumn.has(c)) byColumn.set(c, []);
+      byColumn.get(c)!.push(s);
+    });
+    return [...byColumn.keys()]
+      .sort((a, b) => a - b)
+      .map((c) => ({
+        c,
+        nodes: byColumn.get(c)!.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      }));
+  }, [stages]);
 
   const selected = stages.find((s) => s.id === selectedId) ?? null;
 
@@ -139,7 +141,7 @@ export function FlowGraph({ activity }: { activity: RunActivityState }) {
                       {stage.model && <span className="nodeModel">{stage.model}</span>}
                       <span className="nodeStats">
                         <span>⏱ {formatMs(ms)}</span>
-                        {tokens > 0 && <span>~{tokens.toLocaleString()} tok</span>}
+                        {tokens > 0 && <span title="approximate (chars ÷ 4)">≈{tokens.toLocaleString()} tok</span>}
                       </span>
                     </button>
                   );

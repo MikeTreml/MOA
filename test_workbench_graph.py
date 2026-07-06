@@ -262,6 +262,33 @@ class GraphExecutionTests(unittest.TestCase):
         self.assertNotIn("prose", steps)       # untaken branch skipped
         self.assertEqual(record.final_output, "JOINED")
 
+    def test_execution_order_puts_gate_before_downstream_of_loop_body(self):
+        from workbench.schemas import FlowGraph, GraphCheck, GraphNode
+        from workbench.graph import execution_order
+
+        # finalize depends only on draft (a loop-body node), NOT on the gate.
+        # The barrier must still order finalize AFTER the gate so it reads the
+        # refined draft, not the first-pass one.
+        g = FlowGraph(
+            nodes=[
+                GraphNode(id="draft", kind="llm"),
+                GraphNode(id="gate", kind="gate", depends_on=["draft"],
+                          checks=[GraphCheck(term="q")], loop_to="draft"),
+                GraphNode(id="finalize", kind="llm", depends_on=["draft"]),
+            ],
+            output="finalize",
+        )
+        order = [n.id for n in execution_order(g.nodes)]
+        self.assertLess(order.index("gate"), order.index("finalize"))
+
+    def test_fanout_items_empty_list_yields_no_instances(self):
+        from workbench.workflow import _fanout_items
+
+        self.assertEqual(_fanout_items("[]"), [])
+        self.assertEqual(_fanout_items('{"items": []}'), [])
+        # Unparseable prose still falls back to one item (best effort).
+        self.assertEqual(_fanout_items("just prose"), ["just prose"])
+
     def test_render_template_is_single_pass_no_injection(self):
         from workbench.workflow import _render_template
 

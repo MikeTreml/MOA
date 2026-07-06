@@ -176,7 +176,11 @@ class WorkbenchStorage:
             profiles = self.list_profiles()
             if not any(item.name == old_name for item in profiles):
                 raise KeyError(f"Profile not found: {old_name}")
-            if new_name != old_name and any(item.name == new_name for item in profiles):
+            # Case-insensitive collision check: profiles are sorted/compared by
+            # lowercased name, so "Foo" and "foo" must not coexist.
+            if new_name.lower() != old_name.lower() and any(
+                item.name.lower() == new_name.lower() for item in profiles
+            ):
                 raise ValueError(f"A profile named {new_name!r} already exists.")
             renamed = None
             updated = []

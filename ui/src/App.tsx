@@ -583,6 +583,24 @@ function App() {
     return /^(https?:|data:image\/)/i.test(url) ? url : "";
   }
 
+  async function downloadImage(image: GeneratedImage, index: number) {
+    const src = imageSrc(image);
+    if (!src) return;
+    try {
+      // Route through a Blob URL so a multi-MB base64 image doesn't blow the
+      // browser's href length limit (a data: URI in an anchor can silently fail).
+      const blob = await (await fetch(src)).blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = `moa-image-${index + 1}.png`;
+      anchor.click();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      setMessage("Could not download the image.");
+    }
+  }
+
   async function browseTo(path: string | null) {
     try {
       const listing = await api.listFiles(path);
@@ -905,9 +923,9 @@ function App() {
                       <figure className="imageCard" key={index}>
                         {src ? <img src={src} alt={`Generated ${index + 1}`} /> : <p className="empty">Empty image.</p>}
                         <figcaption>
-                          <a href={src} download={`moa-image-${index + 1}.png`} className="secondaryButton">
+                          <button className="secondaryButton" onClick={() => downloadImage(image, index)}>
                             <UploadCloud size={15} /> Download
-                          </a>
+                          </button>
                         </figcaption>
                       </figure>
                     );

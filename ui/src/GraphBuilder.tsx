@@ -292,10 +292,10 @@ function NodeEditor({
           </datalist>
         </label>
         <label>
-          Lane<input type="number" min={0} value={node.lane ?? 0} onChange={(e) => onChange({ lane: Math.max(0, Number(e.target.value) || 0) })} />
+          Lane<input type="number" min={0} value={node.lane ?? 0} onChange={(e) => { const n = Number(e.target.value); if (e.target.value.trim() !== "" && !Number.isNaN(n)) onChange({ lane: Math.max(0, n) }); }} />
         </label>
         <label>
-          Order<input type="number" min={0} value={node.order ?? 0} onChange={(e) => onChange({ order: Math.max(0, Number(e.target.value) || 0) })} />
+          Order<input type="number" min={0} value={node.order ?? 0} onChange={(e) => { const n = Number(e.target.value); if (e.target.value.trim() !== "" && !Number.isNaN(n)) onChange({ order: Math.max(0, n) }); }} />
         </label>
       </div>
       <label>Prompt<textarea className="compactText" value={node.prompt ?? ""} onChange={(e) => onChange({ prompt: e.target.value })} placeholder="Use {input}, {{node_id}}, {item}" /></label>
