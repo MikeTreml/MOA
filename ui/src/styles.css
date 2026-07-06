@@ -1375,6 +1375,41 @@ code {
   font-size: 12px;
 }
 
+/* Cloud API models editor (Profiles tab) */
+.cloudModels {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-1);
+}
+
+.cloudRow {
+  display: grid;
+  grid-template-columns: 1fr 0.9fr 1.2fr 1.4fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.cloudRow label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.cloudRow .profileDelete {
+  height: 34px;
+}
+
+@media (max-width: 900px) {
+  .cloudRow {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 /* "Call as agent" snippet on the Profiles tab */
 .flowCall {
   display: grid;

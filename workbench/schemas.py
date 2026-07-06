@@ -67,6 +67,19 @@ class ProviderPreset(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class CloudModel(BaseModel):
+    """A cloud/API model registered under a local alias. Anywhere a model name
+    is used (workers, aggregator, evaluator, graph nodes), the alias routes the
+    call to this provider instead of the profile's default. API keys are never
+    stored — they come from env (OPENAI_API_KEY, TOGETHER_API_KEY, MOA_API_KEY…).
+    Cloud models have no local footprint, so nothing size-related applies."""
+
+    alias: str
+    provider: str = "openai"  # openai | together | omp | openai-compatible
+    model: str = ""  # the provider's real model id (defaults to alias if empty)
+    base_url: str = ""  # optional override; required for omp/openai-compatible
+
+
 class Profile(BaseModel):
     name: str = "llama.cpp"
     provider: str = "openai-compatible"
@@ -80,6 +93,7 @@ class Profile(BaseModel):
     max_iterations: int = 2
     allowed_roots: list[str] = Field(default_factory=default_allowed_roots)
     graph: FlowGraph | None = None  # used when workflow == "graph"
+    cloud_models: list[CloudModel] = Field(default_factory=list)
 
 
 class GraphCheck(BaseModel):

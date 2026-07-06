@@ -91,6 +91,8 @@ Module map:
 - `provider_models.py` — provider-agnostic model discovery: `list_models(base_url)` and `server_status(base_url)` read the **active profile's** OpenAI-compatible `/v1/models` (llama.cpp, OpenAI, any compatible server). No CLI. (The old LM Studio `lms`-CLI module + `model_planner.py` were removed — the tool is now provider-agnostic; the Models tab and status reflect whatever endpoint the active profile points at.)
 - `provider_presets.py` — seed presets (llama.cpp, OMP, Together, generic, atomic) surfaced in the Profiles tab.
 
+Cloud/API models: `Profile.cloud_models` is a registry of `CloudModel {alias, provider, model, base_url?}` entries. Anywhere a model name appears (workers/aggregator/evaluator/graph-node `model`), an alias routes that one call to its own provider via `workflow.resolve_model_route` — so a flow can mix local llama.cpp workers with a cloud aggregator. API keys always come from env (`OPENAI_API_KEY`, `TOGETHER_API_KEY`, `OMP_API_KEY`, `MOA_API_KEY`) and are never persisted. Cloud models have no local footprint; the old memory-cap/size accounting was removed with the LM Studio planner (`Profile.memory_cap_gb` remains in the schema for compat but nothing reads it).
+
 ### Run lifecycle (streaming)
 
 Runs are asynchronous and streamed, not request/response:
