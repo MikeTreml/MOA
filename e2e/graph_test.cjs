@@ -40,7 +40,12 @@ async function main() {
   );
 
   const nodeCount = await page.locator(".graphNode").count();
+  const edgeCount = await page.locator(".graphEdges > path").count();
   const stats = ((await page.locator(".graphStats").textContent()) || "").replace(/\s+/g, " ").trim();
+
+  if (process.env.SHOT) {
+    await page.screenshot({ path: process.env.SHOT, fullPage: true });
+  }
 
   // Click a node -> its feed panel appears.
   await page.locator(".graphNode").first().click();
@@ -48,11 +53,13 @@ async function main() {
   await browser.close();
 
   console.log("graph nodes :", nodeCount);
+  console.log("flow edges  :", edgeCount);
   console.log("pulse seen  :", pulseSeen > 0);
   console.log("stats bar   :", stats.slice(0, 70));
   console.log("node feed   :", feed);
 
-  const ok = nodeCount >= 4 && feed >= 1 && /active/.test(stats) && /agents/.test(stats);
+  // Hybrid with 2 workers: orch->w1, orch->w2, w1->synth, w2->synth, synth->eval = 5 edges.
+  const ok = nodeCount >= 4 && feed >= 1 && /active/.test(stats) && /steps/.test(stats) && edgeCount >= 4;
   console.log("RESULT:", ok ? "PASS" : "FAIL");
   process.exit(ok ? 0 : 1);
 }

@@ -4,15 +4,15 @@ from unittest.mock import patch
 
 
 class ProviderConfigTests(unittest.TestCase):
-    def test_default_provider_is_openai_compatible_llamacpp(self):
+    def test_default_provider_is_openai_compatible_lm_studio(self):
         from providers import get_provider_config
 
-        # No MOA_PROVIDER set -> defaults to openai-compatible at the llama.cpp URL.
+        # No MOA_PROVIDER set -> defaults to openai-compatible at the LM Studio URL.
         with patch.dict(os.environ, {}, clear=True):
             config = get_provider_config()
 
         self.assertEqual(config.provider, "openai-compatible")
-        self.assertEqual(config.base_url, "http://127.0.0.1:1235/v1")
+        self.assertEqual(config.base_url, "http://127.0.0.1:1234/v1")
 
     def test_lmstudio_provider_is_no_longer_supported(self):
         from providers import get_provider_config

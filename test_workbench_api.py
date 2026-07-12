@@ -24,14 +24,11 @@ class WorkbenchApiTests(unittest.TestCase):
                 "trainedForToolUse": True,
                 "maxContextLength": 131072,
             }
-            with patch("workbench.api.list_models", return_value=[model]), patch(
-                "workbench.api.server_status",
-                return_value={"loaded_models": [], "running": True},
-            ):
+            with patch("workbench.api.list_models", return_value=[model]):
                 response = client.get("/api/models")
 
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["models"][0]["modelKey"], model["modelKey"])
+            self.assertEqual(response.json(), {"models": [model]})
 
     def test_run_endpoint_returns_complete_trace_from_mocked_workflow(self):
         from workbench.schemas import Evaluation, Profile, RunRecord, TraceStep

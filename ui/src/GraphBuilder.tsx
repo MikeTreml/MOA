@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Plus, Star, Trash2, X } from "lucide-react";
-import type { FlowGraph, GraphNode, LmModel } from "./types";
+import type { FlowGraph, GraphNode, ProviderModel } from "./types";
 import { modelKey } from "./api";
 
 const COL = 210;
@@ -26,7 +26,7 @@ export function GraphBuilder({
 }: {
   graph: FlowGraph;
   onChange: (graph: FlowGraph) => void;
-  models: LmModel[];
+  models: ProviderModel[];
 }) {
   const nodes = graph.nodes ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -244,7 +244,7 @@ function NodeEditor({
 }: {
   node: GraphNode;
   nodes: GraphNode[];
-  models: LmModel[];
+  models: ProviderModel[];
   isOutput: boolean;
   onChange: (patch: Partial<GraphNode>) => void;
   onRename: (newId: string) => void;

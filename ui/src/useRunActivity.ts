@@ -129,7 +129,8 @@ export function useRunActivity(
           startedAt: new Date().toISOString(),
           // Present only for custom-graph flows — the authored layout.
           lane: data.lane,
-          order: data.order
+          order: data.order,
+          ...(Array.isArray(data.deps) ? { deps: data.deps as string[] } : {})
         });
       });
 
@@ -159,6 +160,7 @@ export function useRunActivity(
           status: "complete",
           output: data.output,
           ...(data.started_at ? { startedAt: data.started_at } : {}),
+          ...(Array.isArray(data.metadata?.deps) ? { deps: data.metadata.deps as string[] } : {}),
           endedAt: data.ended_at ?? new Date().toISOString()
         });
       });

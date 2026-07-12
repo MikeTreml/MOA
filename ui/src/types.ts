@@ -46,6 +46,8 @@ export interface Profile {
   evaluator_model: string;
   image_model: string;
   max_iterations: number;
+  frequency_penalty?: number | null;
+  presence_penalty?: number | null;
   allowed_roots: string[];
   graph?: FlowGraph | null;
   cloud_models: CloudModel[];
@@ -56,32 +58,25 @@ export interface GeneratedImage {
   url: string | null;
 }
 
-export interface LmModel {
+/** One entry from the active provider's /v1/models (LM Studio, llama.cpp,
+ * OpenAI, any compatible server), enriched with whatever the server exposes.
+ * Snake-case aliases kept for older stored payloads. */
+export interface ProviderModel {
   type?: string;
   modelKey?: string;
   model_key?: string;
   displayName?: string;
   display_name?: string;
-  sizeBytes?: number;
-  size_bytes?: number;
-  paramsString?: string;
-  params_string?: string;
-  architecture?: string;
-  trainedForToolUse?: boolean;
-  trained_for_tool_use?: boolean;
-  vision?: boolean;
   maxContextLength?: number;
   max_context_length?: number;
-}
-
-export interface ModelPlan {
-  memory_cap_gb: number;
-  worker_models: string[];
-  aggregator_model: string;
-  evaluator_model: string;
-  total_size_bytes: number;
-  selected_models: LmModel[];
-  notes: string[];
+  /** Real file size when the server reports one; otherwise estimated from the
+   * id's parameter count + quantization (sizeIsEstimate=true, shown with ~). */
+  sizeBytes?: number;
+  size_bytes?: number;
+  sizeIsEstimate?: boolean;
+  quantization?: string;
+  /** LM Studio load state: "loaded" | "not-loaded". */
+  state?: string;
 }
 
 export interface ProviderPreset {
@@ -148,13 +143,16 @@ export interface ActivityStage {
   endedAt?: string;
   lane?: number;
   order?: number;
+  /** Step ids of the agents that feed this one — drawn as flow edges. */
+  deps?: string[];
 }
 
-export interface LmStudioStatus {
+export interface ProviderStatus {
   running: boolean;
   status: string;
   base_url: string;
   http_ok: boolean;
   models_count: number;
-  loaded_models: Array<Record<string, unknown>>;
+  /** llama.cpp parallel generation slots (from /props); null when unknown. */
+  total_slots?: number | null;
 }

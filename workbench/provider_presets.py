@@ -6,6 +6,20 @@ from .schemas import ProviderPreset
 def provider_presets() -> list[ProviderPreset]:
     return [
         ProviderPreset(
+            id="lmstudio-local",
+            name="LM Studio",
+            provider="openai-compatible",
+            base_url="http://127.0.0.1:1234/v1",
+            worker_models=["qwen-3b", "qwen-3b"],
+            aggregator_model="qwen-3b",
+            evaluator_model="qwen-3b",
+            env_keys=["MOA_BASE_URL to point at your server"],
+            notes=[
+                "LM Studio's OpenAI-compatible server. It can serve several models at once (JIT loading) — what a real mixture needs.",
+                "Model names are the ids it reports at /v1/models. Enable parallel requests in LM Studio's server settings or workers will queue.",
+            ],
+        ),
+        ProviderPreset(
             id="llamacpp-local",
             name="llama.cpp",
             provider="openai-compatible",
@@ -14,7 +28,10 @@ def provider_presets() -> list[ProviderPreset]:
             aggregator_model="qwen-3b",
             evaluator_model="qwen-3b",
             env_keys=["MOA_BASE_URL to point at your server"],
-            notes=["An OpenAI-compatible llama.cpp server. Model names are the aliases it reports at /v1/models."],
+            notes=[
+                "An OpenAI-compatible llama-server. One model per process — fine for self-ensembles, not multi-model mixtures.",
+                "Start it with --parallel N (N ≥ your worker count) or concurrent workers will queue and run serially.",
+            ],
         ),
         ProviderPreset(
             id="omp-chatgpt-claude",

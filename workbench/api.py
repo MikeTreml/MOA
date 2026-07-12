@@ -134,7 +134,7 @@ def create_app() -> FastAPI:
         """Models the ACTIVE provider actually serves (from its /v1/models),
         so the list matches the endpoint the run will hit."""
         profile = storage.get_active_profile()
-        return {"models": list_models(profile.base_url), "loaded": []}
+        return {"models": list_models(profile.base_url)}
 
     @app.get("/api/provider-presets")
     def presets():

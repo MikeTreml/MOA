@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { Copy, Cpu, Layers3, Network, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
+import { Copy, Cpu, ExternalLink, Layers3, Network, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
+import type { ActivityStage } from "./types";
 import type { RunActivityState } from "./useRunActivity";
 
 const STAGE_ICON: Record<string, typeof Cpu> = {
@@ -32,10 +33,13 @@ function formatDuration(startedAt?: string, endedAt?: string): string | null {
 
 export function ActivityView({
   activity,
-  actions
+  actions,
+  onPopOut
 }: {
   activity: RunActivityState;
   actions?: ReactNode;
+  /** When set, each agent card gets a button opening its own popup window. */
+  onPopOut?: (stage: ActivityStage) => void;
 }) {
   const { stages, record, status, error, reconnecting } = activity;
 
@@ -53,11 +57,11 @@ export function ActivityView({
       {stages.length > 0 && (
         <div className="pipeline">
           {stages.map((stage) => (
-            <div className={`pipeNode ${stage.status}`} key={`pipe-${stage.id}`}>
+            <div className={`pipeNode ${stage.status}`} key={`pipe-${stage.id}`} title={stage.model || undefined}>
               <span className="pipeIcon">
                 <StageIcon stage={stage.stage} />
               </span>
-              <span className="stageLabel">{stage.stage}</span>
+              <span className="stageLabel">{stage.title || stage.stage}</span>
             </div>
           ))}
         </div>
@@ -79,6 +83,15 @@ export function ActivityView({
                   {duration && <span>{duration}</span>}
                   {chars > 0 && <span>{chars.toLocaleString()} chars</span>}
                 </span>
+              )}
+              {onPopOut && (
+                <button
+                  className="iconButton stagePop"
+                  title="Open this agent in its own window"
+                  onClick={() => onPopOut(stage)}
+                >
+                  <ExternalLink size={13} />
+                </button>
               )}
             </div>
             {body && <pre className="tokenStream">{body}</pre>}

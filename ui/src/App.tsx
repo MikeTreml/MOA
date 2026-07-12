@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BrainCircuit,
   CheckCircle2,
@@ -24,11 +24,11 @@ import {
   Users,
   XCircle
 } from "lucide-react";
-import { api, formatBytes, modelKey, modelName, modelSize } from "./api";
+import { api, modelKey, modelName, modelSizeLabel } from "./api";
 import { ActivityView } from "./ActivityView";
 import { GraphBuilder } from "./GraphBuilder";
 import { useRunActivity, type RunActivityState } from "./useRunActivity";
-import type { CloudModel, FileChange, GeneratedImage, LmModel, LmStudioStatus, Profile, ProviderPreset, RunRecord, Workflow } from "./types";
+import type { ActivityStage, CloudModel, FileChange, GeneratedImage, Profile, ProviderModel, ProviderPreset, ProviderStatus, RunRecord, Workflow } from "./types";
 
 function recordToActivity(record: RunRecord | null): RunActivityState {
   if (!record) return { stages: [], record: null, status: "idle", error: null, reconnecting: false };
@@ -38,11 +38,14 @@ function recordToActivity(record: RunRecord | null): RunActivityState {
       stage: step.stage,
       title: step.title,
       model: step.model,
-      status: "complete",
+      status: "complete" as const,
       tokens: "",
       output: step.output,
       startedAt: step.started_at,
-      endedAt: step.ended_at
+      endedAt: step.ended_at,
+      deps: Array.isArray(step.metadata?.deps)
+        ? (step.metadata.deps as unknown[]).filter((d): d is string => typeof d === "string")
+        : undefined
     })),
     record,
     status: "complete",
@@ -75,6 +78,15 @@ const workflowLabels: Record<Workflow, string> = {
   parallel_subtask: "Subtask Parallel",
   iterative_evaluator: "Iterative Eval",
   graph: "Custom Graph"
+};
+
+// One honest sentence per shape — the Run tab subtitle must describe the
+// workflow that will actually execute, not always the hybrid one.
+const workflowDescriptions: Record<Workflow, string> = {
+  hybrid: "Decomposes into one subtask per worker, runs workers in parallel, synthesizes, then evaluates and refines.",
+  parallel_subtask: "Decomposes into one subtask per worker, runs workers in parallel, and synthesizes — no evaluation loop.",
+  iterative_evaluator: "Synthesizes directly from the prompt, then evaluates and refines — no workers.",
+  graph: "Runs your custom flow graph exactly as authored in the Profiles tab."
 };
 
 const SEED_GRAPH = JSON.stringify(
@@ -144,18 +156,27 @@ function StatusPill({ status }: { status?: string }) {
   return <span className={`pill ${ok ? "pillOk" : "pillWarn"}`}>{status ?? "pending"}</span>;
 }
 
-function loadedModelKey(record: Record<string, unknown>): string {
-  const value = record.modelKey ?? record.model_key ?? record.identifier ?? record.id ?? record.model;
-  return typeof value === "string" ? value : "";
+/** Group a worker multiset for display: ["m","m","x"] -> [["m",2],["x",1]]. */
+function groupWorkers(models: string[]): Array<[string, number]> {
+  const counts = new Map<string, number>();
+  for (const model of models) {
+    if (!model) continue;
+    counts.set(model, (counts.get(model) ?? 0) + 1);
+  }
+  return [...counts.entries()];
 }
 
-function uniqueModelKeys(values: string[]): string[] {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+/** Where a role's model actually runs: cloud alias -> its own provider route,
+ * anything else -> the profile's provider/base_url. Mirrors the backend's
+ * resolve_model_route so "same model everywhere" is detected accurately. */
+function resolvedRouteKey(profile: Profile, model: string): string {
+  const cloud = (profile.cloud_models ?? []).find((c) => c.alias === model);
+  if (cloud) return `${cloud.provider}|${cloud.base_url}|${cloud.model || cloud.alias}`;
+  return `${profile.provider}|${profile.base_url}|${model}`;
 }
 
 function providerDisplayName(provider: string): string {
   const normalized = provider.trim().toLowerCase();
-  if (normalized === "lmstudio") return "LM Studio";
   if (normalized === "omp") return "OMP";
   if (normalized === "openai-compatible") return "OpenAI-compatible";
   if (normalized === "openai") return "OpenAI";
@@ -169,8 +190,8 @@ function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [presets, setPresets] = useState<ProviderPreset[]>([]);
-  const [models, setModels] = useState<LmModel[]>([]);
-  const [status, setStatus] = useState<LmStudioStatus | null>(null);
+  const [models, setModels] = useState<ProviderModel[]>([]);
+  const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [latestRun, setLatestRun] = useState<RunRecord | null>(null);
   const [prompt, setPrompt] = useState("Analyze this project and propose the next safest implementation step.");
@@ -191,6 +212,9 @@ function App() {
   const [bootError, setBootError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [autoPopAgents, setAutoPopAgents] = useState<boolean>(
+    () => localStorage.getItem("moa-auto-pop-agents") === "1"
+  );
   const [theme, setTheme] = useState<"dark" | "light">(
     () => (localStorage.getItem("moa-theme") as "dark" | "light") || "dark"
   );
@@ -292,11 +316,35 @@ function App() {
 
   const llmModels = useMemo(() => models.filter((model) => (model.type ?? "llm") === "llm"), [models]);
   const proposedChanges: FileChange[] = latestRun?.file_changes ?? [];
-  const loadedModelKeys = useMemo(
-    () => new Set((status?.loaded_models ?? []).map(loadedModelKey).filter(Boolean)),
-    [status]
-  );
   const activeProviderName = providerDisplayName(profile?.provider ?? "openai-compatible");
+
+  // Honest-parallelism + mixture checks for the Run tab, mirroring the backend:
+  // only hybrid/parallel_subtask run workers, the roster drives the fan-out
+  // (capped at MAX_WORKERS=8), an empty roster falls back to 3× the first
+  // configured model, and cloud-alias workers never touch the local server.
+  const runsWorkers = profile
+    ? profile.workflow === "hybrid" || profile.workflow === "parallel_subtask"
+    : false;
+  const effectiveWorkers = useMemo(() => {
+    if (!profile) return [] as string[];
+    const roster = profile.worker_models.filter(Boolean);
+    if (roster.length) return roster.slice(0, 8);
+    const fallback = profile.aggregator_model || profile.evaluator_model;
+    return fallback ? [fallback, fallback, fallback] : [];
+  }, [profile]);
+  const workerFanout = runsWorkers ? effectiveWorkers.length : 0;
+  const localWorkerCount = useMemo(() => {
+    if (!profile || !runsWorkers) return 0;
+    return effectiveWorkers.filter((m) => !(profile.cloud_models ?? []).some((c) => c.alias === m)).length;
+  }, [profile, runsWorkers, effectiveWorkers]);
+  const selfEnsemble = useMemo(() => {
+    if (!profile || !runsWorkers) return false;
+    const roleModels = [...effectiveWorkers, profile.aggregator_model, profile.evaluator_model].filter(Boolean);
+    if (roleModels.length < 2) return false;
+    return new Set(roleModels.map((m) => resolvedRouteKey(profile, m))).size === 1;
+  }, [profile, runsWorkers, effectiveWorkers]);
+  const slotsShort =
+    status?.total_slots != null && localWorkerCount > status.total_slots ? status.total_slots : null;
 
   function updateProfile(patch: Partial<Profile>) {
     if (!profile) return;
@@ -517,6 +565,59 @@ function App() {
     );
   }
 
+  function agentWindowUrl(runId: string, stage: ActivityStage): string {
+    const title = encodeURIComponent(stage.title || stage.stage);
+    return `activity.html?run_id=${runId}&step_id=${encodeURIComponent(stage.id)}&title=${title}`;
+  }
+
+  function popOutAgent(stage: ActivityStage) {
+    if (!activeRunId) return;
+    const opened = window.open(
+      agentWindowUrl(activeRunId, stage),
+      `moa-agent-${stage.id}`,
+      "width=460,height=640,resizable=yes"
+    );
+    if (!opened) setMessage("Popup blocked — allow popups for this site to open agent windows.");
+  }
+
+  function toggleAutoPop() {
+    const next = !autoPopAgents;
+    if (next) {
+      // Only agents that START after enabling should pop — not history, and
+      // not completed stages an SSE reconnect replays as briefly "running".
+      for (const stage of activity.stages) autoPoppedRef.current.add(stage.id);
+    }
+    setAutoPopAgents(next);
+    localStorage.setItem("moa-auto-pop-agents", next ? "1" : "0");
+  }
+
+  // Serena-style per-agent windows: when enabled, every agent that starts gets
+  // its own popup bound to its step id (the SSE buffer replays, so a window
+  // opened mid-stage still shows the full feed). Browsers may block popups not
+  // born from a click — we detect that once and tell the user what to allow.
+  const autoPoppedRef = useRef<Set<string>>(new Set());
+  const popupBlockedRef = useRef(false);
+  useEffect(() => {
+    autoPoppedRef.current = new Set();
+    popupBlockedRef.current = false;
+  }, [activeRunId]);
+  useEffect(() => {
+    if (!autoPopAgents || !activeRunId || activity.status !== "running") return;
+    for (const stage of activity.stages) {
+      if (stage.status !== "running" || autoPoppedRef.current.has(stage.id)) continue;
+      autoPoppedRef.current.add(stage.id);
+      const opened = window.open(
+        agentWindowUrl(activeRunId, stage),
+        `moa-agent-${stage.id}`,
+        "width=460,height=640,resizable=yes"
+      );
+      if (!opened && !popupBlockedRef.current) {
+        popupBlockedRef.current = true;
+        setMessage("Popup blocked — allow popups for this site so each agent can open its own window.");
+      }
+    }
+  }, [autoPopAgents, activeRunId, activity.stages, activity.status]);
+
   async function previewFiles() {
     if (!profile) return;
     const paths = uniqueLines(contextInput);
@@ -719,9 +820,13 @@ function App() {
               <div className="sectionHeader">
                 <div>
                   <h2>Prompt</h2>
-                  <p>Hybrid runs decompose, parallelize, synthesize, then evaluate.</p>
+                  <p>{workflowDescriptions[profile.workflow]}</p>
                 </div>
                 <div className="runActions">
+                  <label className="autoPopToggle" title="Open one popup window per agent as it starts (serena-style)">
+                    <input type="checkbox" checked={autoPopAgents} onChange={toggleAutoPop} />
+                    Pop out each agent
+                  </label>
                   {running ? (
                     <button className="dangerButton" onClick={stopActiveRun}>
                       <Square size={15} /> Stop
@@ -732,12 +837,25 @@ function App() {
                     </button>
                   )}
                   {activeRunId && (
-                    <button className="iconButton" onClick={popOutActivity} title="Pop out activity (view only)">
+                    <button className="iconButton" onClick={popOutActivity} title="Pop out the flow graph (view only)">
                       <ExternalLink size={16} />
                     </button>
                   )}
                 </div>
               </div>
+              {selfEnsemble && (
+                <div className="notice noticeWarn">
+                  All roles resolve to one model on one endpoint — this run is a self-ensemble, not a mixture.
+                  Add a second local or cloud model (Models tab) for real diversity.
+                </div>
+              )}
+              {slotsShort != null && (
+                <div className="notice noticeWarn">
+                  Your server reports {slotsShort} parallel slot{slotsShort === 1 ? "" : "s"} but this profile sends{" "}
+                  {localWorkerCount} concurrent local worker request{localWorkerCount === 1 ? "" : "s"} — they will
+                  queue and look serial. Start llama.cpp with <code>--parallel {localWorkerCount}</code>.
+                </div>
+              )}
               <textarea
                 className="promptBox"
                 value={prompt}
@@ -779,13 +897,25 @@ function App() {
                 <strong>{activeProviderName}</strong>
               </div>
               <div className="roleList">
-                <span>Workers</span>
-                {profile.worker_models.map((model, index) => <code key={`${model}-${index}`}>{model}</code>)}
-                <span>Aggregator</span>
+                <span>Workers ({workerFanout})</span>
+                {runsWorkers ? (
+                  groupWorkers(effectiveWorkers).map(([model, count]) => (
+                    <code key={model}>{model}{count > 1 ? ` ×${count}` : ""}</code>
+                  ))
+                ) : (
+                  <code>{profile.workflow === "graph" ? "per graph nodes" : "none"}</code>
+                )}
+                <span title="Also runs the orchestrator and refiner stages — there is no separate model for those.">
+                  Aggregator
+                </span>
                 <code>{profile.aggregator_model}</code>
                 <span>Evaluator</span>
                 <code>{profile.evaluator_model}</code>
               </div>
+              <p className="providerHint">
+                The aggregator model also runs the <em>orchestrator</em> and <em>refiner</em> stages you'll see
+                during a run; the evaluator scores drafts.
+              </p>
               <button className="secondaryButton" onClick={saveProfile} disabled={busy}>
                 <Save size={16} /> Save setup
               </button>
@@ -798,7 +928,7 @@ function App() {
               {!activeRunId && !latestRun ? (
                 <p className="empty">No run yet. Enter a prompt and hit Run to watch the agents work.</p>
               ) : (
-                <ActivityView activity={shownActivity} />
+                <ActivityView activity={shownActivity} onPopOut={activeRunId ? popOutAgent : undefined} />
               )}
             </section>
           </div>
@@ -901,6 +1031,8 @@ function App() {
                     {llmModels.length
                       ? `${llmModels.length} model(s) from ${profile.base_url}. Click to assign a role.`
                       : `No models found at ${profile.base_url}. Check the server is up, then Refresh.`}
+                    {status?.total_slots != null &&
+                      ` Server has ${status.total_slots} parallel slot${status.total_slots === 1 ? "" : "s"}.`}
                   </p>
                 </div>
                 <button className="secondaryButton" onClick={refreshModels} disabled={busy}>
@@ -918,8 +1050,20 @@ function App() {
                       <div className="modelMeta">
                         <div className="modelHeader">
                           <span>{modelName(model)}</span>
+                          {model.state === "loaded" && <span className="pill pillOk">loaded</span>}
                         </div>
                         <code>{key}</code>
+                        <span className="modelFacts">
+                          {modelSizeLabel(model) && (
+                            <span title={model.sizeIsEstimate ? "Estimated from the model name's parameter count and its quantization — LM Studio's API reports no file size." : "Size reported by the server."}>
+                              {modelSizeLabel(model)}
+                            </span>
+                          )}
+                          {model.quantization && <span>{model.quantization}</span>}
+                          {(model.maxContextLength ?? 0) > 0 && (
+                            <span>{Math.round((model.maxContextLength ?? 0) / 1024)}k ctx</span>
+                          )}
+                        </span>
                       </div>
                       <div className="roleButtons">
                         <span className={`workerStepper ${count > 0 ? "roleActive" : ""}`} title="Number of parallel worker instances of this model">
@@ -984,14 +1128,22 @@ function App() {
                 <label>
                   Aggregator
                   <select value={profile.aggregator_model} onChange={(event) => updateProfile({ aggregator_model: event.target.value })}>
-                    {llmModels.map((model, index) => <option key={`${modelKey(model)}-${index}`} value={modelKey(model)}>{modelName(model)}</option>)}
+                    {llmModels.map((model, index) => (
+                      <option key={`${modelKey(model)}-${index}`} value={modelKey(model)}>
+                        {modelName(model)}{modelSizeLabel(model) ? ` — ${modelSizeLabel(model)}` : ""}
+                      </option>
+                    ))}
                     {(profile.cloud_models ?? []).map((cloud, index) => <option key={`cloud-${cloud.alias}-${index}`} value={cloud.alias}>{cloud.alias} (API)</option>)}
                   </select>
                 </label>
                 <label>
                   Evaluator
                   <select value={profile.evaluator_model} onChange={(event) => updateProfile({ evaluator_model: event.target.value })}>
-                    {llmModels.map((model, index) => <option key={`${modelKey(model)}-${index}`} value={modelKey(model)}>{modelName(model)}</option>)}
+                    {llmModels.map((model, index) => (
+                      <option key={`${modelKey(model)}-${index}`} value={modelKey(model)}>
+                        {modelName(model)}{modelSizeLabel(model) ? ` — ${modelSizeLabel(model)}` : ""}
+                      </option>
+                    ))}
                     {(profile.cloud_models ?? []).map((cloud, index) => <option key={`cloud-${cloud.alias}-${index}`} value={cloud.alias}>{cloud.alias} (API)</option>)}
                   </select>
                 </label>
@@ -1159,7 +1311,7 @@ function App() {
               <label>
                 Provider
                 <select value={profile.provider} onChange={(event) => updateProfile({ provider: event.target.value })}>
-                  <option value="openai-compatible">OpenAI-compatible (llama.cpp)</option>
+                  <option value="openai-compatible">OpenAI-compatible (LM Studio / llama.cpp)</option>
                   <option value="omp">OMP</option>
                   <option value="openai">OpenAI</option>
                   <option value="together">Together</option>
@@ -1171,13 +1323,51 @@ function App() {
             <p className="providerHint">
               API keys are read from environment variables, not saved in profiles. OpenAI uses <code>OPENAI_API_KEY</code>, OMP uses <code>OMP_API_KEY</code>, Together uses <code>TOGETHER_API_KEY</code>, and generic proxies use <code>MOA_API_KEY</code>.
             </p>
-            <label>Worker models<textarea className="compactText" value={textFromList(profile.worker_models)} onChange={(event) => updateProfile({ worker_models: uniqueLines(event.target.value) })} /></label>
+            <label>
+              Worker models (one line per instance — the list length is the parallel fan-out)
+              <textarea className="compactText" value={textFromList(profile.worker_models)} onChange={(event) => updateProfile({ worker_models: uniqueLines(event.target.value) })} />
+            </label>
             <div className="formGrid">
-              <label>Aggregator<input value={profile.aggregator_model} onChange={(event) => updateProfile({ aggregator_model: event.target.value })} /></label>
+              <label>
+                Aggregator (also runs the orchestrator and refiner stages)
+                <input value={profile.aggregator_model} onChange={(event) => updateProfile({ aggregator_model: event.target.value })} />
+              </label>
               <label>Evaluator<input value={profile.evaluator_model} onChange={(event) => updateProfile({ evaluator_model: event.target.value })} /></label>
             </div>
             <div className="formGrid">
               <label>Image model<input value={profile.image_model} placeholder="e.g. dall-e-3 / sdxl (optional)" onChange={(event) => updateProfile({ image_model: event.target.value })} /></label>
+              <label>
+                Frequency penalty (anti-repetition, e.g. 0.3)
+                <input
+                  type="number"
+                  step={0.1}
+                  min={-2}
+                  max={2}
+                  value={profile.frequency_penalty ?? ""}
+                  placeholder="provider default"
+                  onChange={(event) =>
+                    updateProfile({
+                      frequency_penalty: event.target.value.trim() === "" ? null : Number(event.target.value)
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Presence penalty
+                <input
+                  type="number"
+                  step={0.1}
+                  min={-2}
+                  max={2}
+                  value={profile.presence_penalty ?? ""}
+                  placeholder="provider default"
+                  onChange={(event) =>
+                    updateProfile({
+                      presence_penalty: event.target.value.trim() === "" ? null : Number(event.target.value)
+                    })
+                  }
+                />
+              </label>
             </div>
 
             <div className="cloudModels">
