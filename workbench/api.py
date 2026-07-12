@@ -33,7 +33,7 @@ from .run_registry import RunRegistry, RunSession
 from .schemas import Evaluation, FlowGraph, Profile, RunRecord, RunRequest
 from .schemas import new_id
 from .storage import WorkbenchStorage
-from .workflow import run_workflow
+from .workflow import resolve_model_route, run_workflow
 
 
 def _sse(event: str, data: Any) -> str:
@@ -450,20 +450,37 @@ def create_app() -> FastAPI:
         if not re.fullmatch(r"\d{2,4}x\d{2,4}", request.size):
             raise HTTPException(status_code=400, detail="size must look like WIDTHxHEIGHT, e.g. 1024x1024.")
         profile = storage.get_active_profile()
+        chosen = request.model or profile.image_model or None
+        # A cloud-model alias (e.g. an OpenAI/Together entry) routes images to
+        # its own provider/base_url, same as every other model reference —
+        # otherwise it silently fell through to the profile's own base_url,
+        # which for a local llama.cpp/text server has no images endpoint at all.
+        provider, base_url, model_id = (
+            resolve_model_route(profile, chosen) if chosen else (profile.provider, profile.base_url, None)
+        )
         try:
             result = generate_image(
                 prompt=request.prompt,
-                model=request.model or profile.image_model or None,
+                model=model_id,
                 n=request.n,
                 size=request.size,
-                provider=profile.provider,
-                base_url=profile.base_url,
+                provider=provider,
+                base_url=base_url,
             )
         except NotImplementedError as exc:
             raise HTTPException(status_code=501, detail=str(exc)) from exc
         except Exception as exc:  # provider/network/model errors -> 502
-            raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}") from exc
-        return {"images": result, "model": request.model or profile.image_model or None}
+            detail = f"Image generation failed: {exc}"
+            if "404" in str(exc) and not any(c.alias == chosen for c in profile.cloud_models):
+                detail += (
+                    " — the server at "
+                    f"{base_url or '(default)'} may not implement image generation "
+                    "(common for text-only llama.cpp servers). Register a cloud model "
+                    "(e.g. OpenAI dall-e-3) and set it as the Image model to route "
+                    "image requests elsewhere."
+                )
+            raise HTTPException(status_code=502, detail=detail) from exc
+        return {"images": result, "model": model_id}
 
     @app.post("/api/files/list")
     def list_files(request: FileListRequest):

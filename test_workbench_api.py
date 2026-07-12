@@ -342,6 +342,47 @@ class WorkbenchApiTests(unittest.TestCase):
                 response = client.post("/api/images", json={"prompt": "a cat"})
             self.assertEqual(response.status_code, 502)
 
+    def test_images_endpoint_routes_cloud_alias_to_its_own_provider(self):
+        from workbench.schemas import Profile
+
+        with tempfile.TemporaryDirectory() as appdata:
+            client = self.make_client(appdata)
+            profile = Profile(
+                name="with-cloud-image",
+                allowed_roots=[str(Path.cwd())],
+                image_model="dalle",
+                cloud_models=[
+                    {"alias": "dalle", "provider": "openai", "model": "dall-e-3", "base_url": ""}
+                ],
+            )
+            saved = client.post("/api/profiles", json=profile.model_dump(mode="json"))
+            self.assertEqual(saved.status_code, 200)
+
+            captured = {}
+
+            def fake_generate_image(**kwargs):
+                captured.update(kwargs)
+                return [{"b64_json": "QUJD", "url": None}]
+
+            with patch("workbench.api.generate_image", side_effect=fake_generate_image):
+                response = client.post("/api/images", json={"prompt": "a red cube", "n": 1, "size": "512x512"})
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(captured["provider"], "openai")
+            self.assertEqual(captured["model"], "dall-e-3")
+            self.assertEqual(response.json()["model"], "dall-e-3")
+
+    def test_images_endpoint_404_hints_at_cloud_model_when_local_server_lacks_support(self):
+        with tempfile.TemporaryDirectory() as appdata:
+            client = self.make_client(appdata)
+            with patch(
+                "workbench.api.generate_image",
+                side_effect=RuntimeError("Error code: 404 - {'error': {'message': 'File Not Found'}}"),
+            ):
+                response = client.post("/api/images", json={"prompt": "a cat"})
+            self.assertEqual(response.status_code, 502)
+            self.assertIn("cloud model", response.text.lower())
+
     def test_provider_presets_include_omp_and_atomic_placeholder(self):
         with tempfile.TemporaryDirectory() as appdata:
             client = self.make_client(appdata)
