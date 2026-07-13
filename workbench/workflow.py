@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -24,6 +25,10 @@ TokenFn = Callable[[str], None]
 StepFn = Callable[[TraceStep], None]
 EventFn = Callable[[str, dict[str, Any]], None]
 
+# Hard ceiling on parallel worker instances, matching the fanout cap: the roster
+# drives the fan-out, but a runaway roster can't spawn an unbounded swarm.
+MAX_WORKERS = 8
+
 
 class ActivityEmitter:
     """Surfaces transient agent activity (a stage starting, tokens streaming in)
@@ -40,6 +45,7 @@ class ActivityEmitter:
         model: str | None,
         lane: int | None = None,
         order: int | None = None,
+        deps: list[str] | None = None,
     ) -> str:
         step_id = new_id("step")
         if self._on_event is not None:
@@ -50,6 +56,10 @@ class ActivityEmitter:
                 payload["lane"] = lane
             if order is not None:
                 payload["order"] = order
+            # Upstream step ids: which agents feed this one, so the pop-out can
+            # draw the actual flow edges instead of generic column connectors.
+            if deps:
+                payload["deps"] = list(deps)
             self._on_event("stage_start", payload)
         return step_id
 
@@ -61,6 +71,115 @@ class ActivityEmitter:
             self._on_event("token", {"id": step_id, "text": text})
 
         return sink
+
+
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def strip_reasoning(text: str) -> str:
+    """Drop the chain-of-thought a reasoning model emits before its answer.
+
+    Two shapes are handled: a LEADING <think>…</think> block, and the template
+    shape where the opening tag lives in the prompt (DeepSeek-R1 style) so the
+    completion is "…reasoning…</think>answer". Think-tags later in the body are
+    left alone — there they're content (e.g. code that mentions the tags), not
+    reasoning, and stripping them would corrupt legitimate output. An unclosed
+    leading <think> keeps its text: a truncated all-thinking output still beats
+    an empty answer."""
+    lower = text.lower()
+    open_at = lower.find(_THINK_OPEN)
+    close_at = lower.find(_THINK_CLOSE)
+    if text.lstrip().lower().startswith(_THINK_OPEN):
+        if close_at != -1:
+            return text[close_at + len(_THINK_CLOSE) :].strip()
+        return text[open_at + len(_THINK_OPEN) :].strip()
+    if close_at != -1 and (open_at == -1 or open_at > close_at):
+        # A close tag with no opener before it: the opener was in the prompt
+        # template, so everything up to the close is reasoning.
+        return text[close_at + len(_THINK_CLOSE) :].strip()
+    return text
+
+
+class ThinkStreamFilter:
+    """Streaming counterpart of :func:`strip_reasoning`: suppresses a LEADING
+    <think>…</think> block so chain-of-thought never reaches the live feed,
+    then passes everything through verbatim (a think-tag later in the body is
+    content, not reasoning). Thinking text is buffered rather than dropped, so
+    an unclosed block is emitted at flush() — matching strip_reasoning's
+    keep-the-text behavior. The closing-only template shape cannot be filtered
+    live (its text has already streamed before the close tag arrives); the
+    stored output is still cleaned by strip_reasoning."""
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._thought = ""
+        self._state = "start"  # start | thinking | passthrough
+
+    def feed(self, delta: str) -> str:
+        if self._state == "passthrough":
+            return delta
+        self._buffer += delta
+        if self._state == "start":
+            lead = self._buffer.lstrip()
+            if not lead:
+                return ""
+            probe = lead[: len(_THINK_OPEN)].lower()
+            if _THINK_OPEN.startswith(probe):
+                if len(lead) < len(_THINK_OPEN):
+                    return ""  # could still become the open tag; hold it back
+                self._buffer = lead[len(_THINK_OPEN) :]
+                self._state = "thinking"
+            else:
+                # Not a leading think block: everything is real output.
+                self._state = "passthrough"
+                out, self._buffer = self._buffer, ""
+                return out
+        # thinking: swallow until the close tag, holding back a partial-tag tail.
+        low = self._buffer.lower()
+        index = low.find(_THINK_CLOSE)
+        if index == -1:
+            held = self._partial_close_suffix()
+            keep_from = len(self._buffer) - held
+            self._thought += self._buffer[:keep_from]
+            self._buffer = self._buffer[keep_from:]
+            return ""
+        self._buffer = self._buffer[index + len(_THINK_CLOSE) :]
+        self._state = "passthrough"
+        self._thought = ""  # block closed: the reasoning is discarded
+        out, self._buffer = self._buffer, ""
+        return out
+
+    def _partial_close_suffix(self) -> int:
+        """Length of the longest buffer suffix that could still grow into the
+        close tag."""
+        low = self._buffer.lower()
+        for size in range(min(len(low), len(_THINK_CLOSE) - 1), 0, -1):
+            if _THINK_CLOSE.startswith(low[-size:]):
+                return size
+        return 0
+
+    def flush(self) -> str:
+        out = (self._thought + self._buffer) if self._state == "thinking" else self._buffer
+        self._buffer = ""
+        self._thought = ""
+        return out
+
+
+def looks_degenerate(text: str) -> bool:
+    """Heuristic for instruction-echo loops (a small-local-model failure mode
+    where the same sentence repeats until max_tokens): flag when one non-trivial
+    segment both repeats many times and dominates the tail of the output.
+    Thresholds are deliberately high — a legitimate refrain (a 4× chorus) must
+    not trigger a retry that could replace a correct answer."""
+    if len(text) < 400:
+        return False
+    tail = text[-2000:]
+    segments = [s.strip() for s in re.split(r"[.!?\n,;]+", tail) if len(s.strip()) >= 20]
+    if len(segments) < 8:
+        return False
+    top = Counter(segments).most_common(1)[0][1]
+    return top >= 6 and top / len(segments) >= 0.5
 
 
 def extract_json(text: str) -> Any | None:
@@ -89,61 +208,119 @@ def resolve_model_route(profile: Profile, model: str) -> tuple[str, str | None, 
     return profile.provider, profile.base_url, model
 
 
-async def provider_complete(
-    model, messages, profile: Profile, json_mode=False, on_token: TokenFn | None = None, **kwargs
+async def _complete_once(
+    model_id: str,
+    messages,
+    provider: str,
+    base_url: str | None,
+    json_mode: bool,
+    on_token: TokenFn | None,
+    max_tokens: int,
+    temperature: float,
+    frequency_penalty: float | None,
+    presence_penalty: float | None,
 ) -> str:
-    provider, base_url, model_id = resolve_model_route(profile, model)
-    response_format = {"type": "json_object"} if json_mode else None
+    """One completion attempt: streaming when a token sink is present, with
+    chain-of-thought filtered out of both the live feed and the returned text."""
+    penalties: dict[str, float] = {}
+    if frequency_penalty is not None:
+        penalties["frequency_penalty"] = frequency_penalty
+    if presence_penalty is not None:
+        penalties["presence_penalty"] = presence_penalty
     if on_token is not None and not json_mode:
         try:
+            think_filter = ThinkStreamFilter()
             parts: list[str] = []
             async for delta in stream_chat_completion_async(
                 model=model_id,
                 messages=messages,
-                max_tokens=kwargs.get("max_tokens", 1024),
-                temperature=kwargs.get("temperature", 0.2),
+                max_tokens=max_tokens,
+                temperature=temperature,
                 provider=provider,
                 base_url=base_url,
+                **penalties,
             ):
                 if delta:
                     parts.append(delta)
-                    on_token(delta)
-            return "".join(parts)
+                    visible = think_filter.feed(delta)
+                    if visible:
+                        on_token(visible)
+            tail = think_filter.flush()
+            if tail:
+                on_token(tail)
+            return strip_reasoning("".join(parts))
         except Exception:
             # Streaming not supported / failed mid-flight: fall back to a single
             # blocking completion so the run still produces an answer.
             pass
+    response_format = {"type": "json_object"} if json_mode else None
     try:
         response = await generate_chat_completion_async(
             model=model_id,
             messages=messages,
-            max_tokens=kwargs.get("max_tokens", 1024),
-            temperature=kwargs.get("temperature", 0.2),
+            max_tokens=max_tokens,
+            temperature=temperature,
             provider=provider,
             base_url=base_url,
             response_format=response_format,
+            **penalties,
         )
     except TypeError:
         response = await generate_chat_completion_async(
             model=model_id,
             messages=messages,
-            max_tokens=kwargs.get("max_tokens", 1024),
-            temperature=kwargs.get("temperature", 0.2),
+            max_tokens=max_tokens,
+            temperature=temperature,
             provider=provider,
             base_url=base_url,
         )
     except Exception:
-        if not json_mode:
+        # Optional extras (json_object response_format, sampling penalties) are
+        # the usual rejection cause; retry bare once. Without extras there is
+        # nothing to remove, so surface the real error.
+        if response_format is None and not penalties:
             raise
         response = await generate_chat_completion_async(
             model=model_id,
             messages=messages,
-            max_tokens=kwargs.get("max_tokens", 1024),
-            temperature=kwargs.get("temperature", 0.2),
+            max_tokens=max_tokens,
+            temperature=temperature,
             provider=provider,
             base_url=base_url,
         )
-    return get_completion_text(response)
+    return strip_reasoning(get_completion_text(response))
+
+
+DEGENERATE_RETRY_NOTE = "\n\n[Repetition detected — retrying once with stronger anti-repetition sampling]\n\n"
+
+
+async def provider_complete(
+    model, messages, profile: Profile, json_mode=False, on_token: TokenFn | None = None, **kwargs
+) -> str:
+    provider, base_url, model_id = resolve_model_route(profile, model)
+    max_tokens = kwargs.get("max_tokens", 1024)
+    temperature = kwargs.get("temperature", 0.2)
+    output = await _complete_once(
+        model_id, messages, provider, base_url, json_mode, on_token,
+        max_tokens, temperature,
+        profile.frequency_penalty, profile.presence_penalty,
+    )
+    if json_mode or not looks_degenerate(output):
+        return output
+    # The model fell into an instruction-echo loop; one hotter retry with a
+    # strong frequency penalty usually breaks it. The feed gets a marker so the
+    # restart is visible instead of looking like more looping.
+    if on_token is not None:
+        on_token(DEGENERATE_RETRY_NOTE)
+    retry = await _complete_once(
+        model_id, messages, provider, base_url, json_mode, on_token,
+        max_tokens, min(temperature + 0.35, 1.0),
+        0.7, profile.presence_penalty,
+    )
+    if looks_degenerate(retry):
+        # Both attempts looped; keep the shorter one (less noise downstream).
+        return retry if len(retry) <= len(output) else output
+    return retry
 
 
 def _select_model(profile: Profile, primary: str | None = None) -> str:
@@ -201,15 +378,45 @@ def _fallback_subtasks(prompt: str) -> list[Subtask]:
     ]
 
 
+def _fit_subtasks(subtasks: list[Subtask], target: int) -> list[Subtask]:
+    """Pad or trim the orchestrator's subtasks so exactly `target` workers run —
+    the roster the user configured, not whatever count the model felt like
+    returning. Padding cycles the parsed subtasks as independent alternate
+    takes, which is real MoA ensembling rather than dead configuration."""
+    if not subtasks or target < 1 or len(subtasks) == target:
+        return subtasks[:target] if subtasks else subtasks
+    if len(subtasks) > target:
+        return subtasks[:target]
+    fitted = list(subtasks)
+    while len(fitted) < target:
+        base = subtasks[(len(fitted) - len(subtasks)) % len(subtasks)]
+        take = (len(fitted) // len(subtasks)) + 1
+        fitted.append(
+            Subtask(
+                title=f"{base.title} (take {take})",
+                prompt=base.prompt
+                + "\n\nThis is an independent second opinion on the same subtask: "
+                "approach it from a different angle than another worker might.",
+            )
+        )
+    return fitted
+
+
 async def make_subtasks(
     request: RunRequest, complete_fn: CompleteFn, activity: ActivityEmitter | None = None
 ):
     profile = request.profile
     model = _select_model(profile)
+    # The worker roster IS the requested fan-out: N entries -> N workers (the
+    # point of the ×N stepper). Empty roster falls back to 3; MAX_WORKERS keeps
+    # a runaway roster from spawning a swarm.
+    requested = len([m for m in profile.worker_models if m])
+    target = min(requested, MAX_WORKERS) if requested else 3
     step_id = activity.start("orchestrator", "Break into subtasks", model) if activity else None
     started = now_iso()
     prompt = (
-        "Break the user task into 2 to 4 independent subtasks for parallel LLM workers. "
+        f"Break the user task into exactly {target} independent subtask"
+        f"{'s' if target != 1 else ''} for parallel LLM workers. "
         "Return only JSON in this shape: {\"subtasks\":[{\"title\":\"...\",\"prompt\":\"...\"}]}.\n\n"
         f"User task:\n{request.prompt}{_context_block(request)}"
     )
@@ -224,13 +431,15 @@ async def make_subtasks(
     parsed = extract_json(output)
     subtasks = []
     if isinstance(parsed, dict):
-        for item in parsed.get("subtasks", [])[:4]:
+        for item in parsed.get("subtasks", [])[:MAX_WORKERS]:
             if isinstance(item, dict) and item.get("title") and item.get("prompt"):
                 subtasks.append(Subtask(title=str(item["title"]), prompt=str(item["prompt"])))
     if len(subtasks) < 1:
         subtasks = _fallback_subtasks(request.prompt)
-    return subtasks[:4], _trace(
-        "orchestrator", "Break into subtasks", model, prompt, output, step_id=step_id, started_at=started
+    subtasks = _fit_subtasks(subtasks, target)
+    return subtasks, _trace(
+        "orchestrator", "Break into subtasks", model, prompt, output,
+        step_id=step_id, started_at=started, requested_workers=requested, workers=len(subtasks),
     )
 
 
@@ -240,8 +449,13 @@ async def run_worker(
     model: str,
     complete_fn: CompleteFn,
     activity: ActivityEmitter | None = None,
+    index: int = 0,
+    parent_ids: list[str] | None = None,
 ):
-    step_id = activity.start("worker", subtask.title, model) if activity else None
+    # The instance number keeps N same-model workers tellable-apart everywhere
+    # a title is shown (pipeline strip, pop-out nodes, trace cards).
+    title = f"Worker {index + 1}: {subtask.title}"
+    step_id = activity.start("worker", title, model, deps=parent_ids) if activity else None
     started = now_iso()
     prompt = (
         "Worker subtask: solve the assigned subtask independently. "
@@ -256,7 +470,11 @@ async def run_worker(
         temperature=0.4,
         on_token=activity.token_sink(step_id) if activity and step_id else None,
     )
-    return output, _trace("worker", subtask.title, model, prompt, output, step_id=step_id, started_at=started)
+    return output, _trace(
+        "worker", title, model, prompt, output,
+        step_id=step_id, started_at=started, worker_index=index + 1,
+        **({"deps": list(parent_ids)} if parent_ids else {}),
+    )
 
 
 async def synthesize(
@@ -264,10 +482,15 @@ async def synthesize(
     worker_outputs: list[str],
     complete_fn: CompleteFn,
     activity: ActivityEmitter | None = None,
+    parent_ids: list[str] | None = None,
 ):
     profile = request.profile
     model = _select_model(profile)
-    step_id = activity.start("synthesizer", "Synthesize worker outputs", model) if activity else None
+    step_id = (
+        activity.start("synthesizer", "Synthesize worker outputs", model, deps=parent_ids)
+        if activity
+        else None
+    )
     started = now_iso()
     prompt = (
         "Synthesize the worker outputs into one final draft for the user. "
@@ -285,16 +508,26 @@ async def synthesize(
         on_token=activity.token_sink(step_id) if activity and step_id else None,
     )
     return output, _trace(
-        "synthesizer", "Synthesize worker outputs", model, prompt, output, step_id=step_id, started_at=started
+        "synthesizer", "Synthesize worker outputs", model, prompt, output,
+        step_id=step_id, started_at=started,
+        **({"deps": list(parent_ids)} if parent_ids else {}),
     )
 
 
 async def evaluate(
-    request: RunRequest, draft: str, complete_fn: CompleteFn, activity: ActivityEmitter | None = None
+    request: RunRequest,
+    draft: str,
+    complete_fn: CompleteFn,
+    activity: ActivityEmitter | None = None,
+    iteration: int = 0,
+    parent_ids: list[str] | None = None,
 ):
     profile = request.profile
     model = _select_model(profile, profile.evaluator_model)
-    step_id = activity.start("evaluator", "Evaluate draft", model) if activity else None
+    # Iteration suffix matches the graph engine's "(N)" convention so repeated
+    # loop passes don't render as identical twins.
+    title = "Evaluate draft" if iteration == 0 else f"Evaluate draft ({iteration + 1})"
+    step_id = activity.start("evaluator", title, model, deps=parent_ids) if activity else None
     started = now_iso()
     prompt = (
         "Evaluate the draft against the user task. Return only JSON with "
@@ -318,7 +551,8 @@ async def evaluate(
         score=score,
     )
     return evaluation, _trace(
-        "evaluator", "Evaluate draft", model, prompt, output, step_id=step_id, started_at=started
+        "evaluator", title, model, prompt, output, step_id=step_id, started_at=started,
+        **({"deps": list(parent_ids)} if parent_ids else {}),
     )
 
 
@@ -328,10 +562,13 @@ async def refine(
     evaluation: Evaluation,
     complete_fn: CompleteFn,
     activity: ActivityEmitter | None = None,
+    iteration: int = 0,
+    parent_ids: list[str] | None = None,
 ):
     profile = request.profile
     model = _select_model(profile)
-    step_id = activity.start("refiner", "Revise draft", model) if activity else None
+    title = "Revise draft" if iteration == 0 else f"Revise draft ({iteration + 1})"
+    step_id = activity.start("refiner", title, model, deps=parent_ids) if activity else None
     started = now_iso()
     prompt = (
         "Revise the draft using the evaluator feedback. Return only the improved answer.\n\n"
@@ -345,7 +582,10 @@ async def refine(
         temperature=0.2,
         on_token=activity.token_sink(step_id) if activity and step_id else None,
     )
-    return output, _trace("refiner", "Revise draft", model, prompt, output, step_id=step_id, started_at=started)
+    return output, _trace(
+        "refiner", title, model, prompt, output, step_id=step_id, started_at=started,
+        **({"deps": list(parent_ids)} if parent_ids else {}),
+    )
 
 
 _PLACEHOLDER_RE = re.compile(r"\{\{([^{}]+)\}\}|\{(input|item)\}")
@@ -495,6 +735,15 @@ async def run_graph_workflow(
     input_text = request.prompt + _context_block(request)
     outputs: dict[str, str] = {}
     skipped: set[str] = set()
+    # Latest iteration's step ids per node, so downstream nodes can record which
+    # concrete agent instances fed them (drawn as edges in the pop-out).
+    steps_by_node: dict[str, list[str]] = {}
+
+    def dep_step_ids(dep_nodes: list[str]) -> list[str]:
+        ids: list[str] = []
+        for dep in dep_nodes:
+            ids.extend(steps_by_node.get(dep, []))
+        return ids
 
     def is_skipped(node) -> bool:
         """A node is skipped when its routing condition doesn't hold, or every
@@ -520,9 +769,10 @@ async def run_graph_workflow(
         order = node.order + iteration
         if node.kind == "fanout":
             items = _fanout_items(outputs.get(node.over, ""))
+            deps = dep_step_ids([node.over, *node.depends_on])
 
             async def run_item(index: int, item: str):
-                step_id = activity.start(node.id, f"{base_title} {index + 1}", model, node.lane, order + index) if activity else None
+                step_id = activity.start(node.id, f"{base_title} {index + 1}", model, node.lane, order + index, deps=deps or None) if activity else None
                 started = now_iso()
                 prompt = _render_template(node.prompt, input_text, outputs, item=item)
                 out = await complete_fn(
@@ -530,7 +780,11 @@ async def run_graph_workflow(
                     max_tokens=1200, temperature=0.4,
                     on_token=activity.token_sink(step_id) if activity and step_id else None,
                 )
-                return out, _trace(node.id, f"{base_title} {index + 1}", model, prompt, out, step_id=step_id, started_at=started)
+                return out, _trace(
+                    node.id, f"{base_title} {index + 1}", model, prompt, out,
+                    step_id=step_id, started_at=started,
+                    **({"deps": deps} if deps else {}),
+                )
 
             tasks = [asyncio.ensure_future(run_item(i, it)) for i, it in enumerate(items)]
             try:
@@ -541,12 +795,16 @@ async def run_graph_workflow(
                 await asyncio.gather(*tasks, return_exceptions=True)
                 raise
             parts = []
+            instance_ids = []
             for out, step in results:
                 parts.append(out)
                 emit(step)
+                instance_ids.append(step.id)
+            steps_by_node[node.id] = instance_ids
             outputs[node.id] = "\n\n".join(f"{i + 1}. {p}" for i, p in enumerate(parts))
         else:  # llm
-            step_id = activity.start(node.id, title, model, node.lane, order) if activity else None
+            deps = dep_step_ids(node.depends_on)
+            step_id = activity.start(node.id, title, model, node.lane, order, deps=deps or None) if activity else None
             started = now_iso()
             prompt = _render_template(node.prompt, input_text, outputs)
             output = await complete_fn(
@@ -554,14 +812,20 @@ async def run_graph_workflow(
                 max_tokens=1400, temperature=0.3,
                 on_token=activity.token_sink(step_id) if activity and step_id else None,
             )
-            emit(_trace(node.id, title, model, prompt, output, step_id=step_id, started_at=started))
+            step = _trace(
+                node.id, title, model, prompt, output, step_id=step_id, started_at=started,
+                **({"deps": deps} if deps else {}),
+            )
+            emit(step)
+            steps_by_node[node.id] = [step.id]
             outputs[node.id] = output
 
     async def run_gate(node, iteration: int) -> bool:
         model = node.model or _select_model(profile, profile.evaluator_model)
         base_title = node.title or node.id
         title = base_title if iteration == 0 else f"{base_title} ({iteration + 1})"
-        step_id = activity.start(node.id, title, model, node.lane, node.order + iteration) if activity else None
+        deps = dep_step_ids(node.depends_on)
+        step_id = activity.start(node.id, title, model, node.lane, node.order + iteration, deps=deps or None) if activity else None
         started = now_iso()
         prompt = _build_gate_prompt(node, outputs)
         raw = await complete_fn(
@@ -570,7 +834,12 @@ async def run_graph_workflow(
         )
         passed, _feedback, summary = _parse_gate(raw, node.checks)
         outputs[node.id] = summary  # available to a refine node via {{gate_id}}
-        emit(_trace(node.id, title, model, prompt, summary, step_id=step_id, started_at=started, passed=passed))
+        step = _trace(
+            node.id, title, model, prompt, summary, step_id=step_id, started_at=started,
+            passed=passed, **({"deps": deps} if deps else {}),
+        )
+        emit(step)
+        steps_by_node[node.id] = [step.id]
         return passed
 
     for node in execution_order(graph.nodes):
@@ -644,6 +913,9 @@ async def run_workflow(
             on_step(step)
         return step
 
+    # The id of the step that produced the current draft — each stage's trace
+    # step records its upstream ids so the pop-out can draw real flow edges.
+    draft_step_id: str | None = None
     if profile.workflow == "graph":
         draft = await run_graph_workflow(request, complete, emit, activity)
     elif profile.workflow == "iterative_evaluator":
@@ -651,13 +923,17 @@ async def run_workflow(
             request, [request.prompt + _context_block(request)], complete, activity
         )
         emit(synth_step)
+        draft_step_id = synth_step.id
     else:
         subtasks, orchestrator_step = await make_subtasks(request, complete, activity)
         emit(orchestrator_step)
         worker_models = [model for model in profile.worker_models if model] or [_select_model(profile)]
         worker_tasks = [
             asyncio.ensure_future(
-                run_worker(profile, subtask, worker_models[index % len(worker_models)], complete, activity)
+                run_worker(
+                    profile, subtask, worker_models[index % len(worker_models)], complete, activity,
+                    index=index, parent_ids=[orchestrator_step.id],
+                )
             )
             for index, subtask in enumerate(subtasks)
         ]
@@ -672,21 +948,33 @@ async def run_workflow(
             await asyncio.gather(*worker_tasks, return_exceptions=True)
             raise
         worker_outputs = []
+        worker_step_ids = []
         for output, step in worker_results:
             worker_outputs.append(output)
             emit(step)
-        draft, synth_step = await synthesize(request, worker_outputs, complete, activity)
+            worker_step_ids.append(step.id)
+        draft, synth_step = await synthesize(
+            request, worker_outputs, complete, activity, parent_ids=worker_step_ids
+        )
         emit(synth_step)
+        draft_step_id = synth_step.id
 
     evaluation = Evaluation(status="PASS", feedback="Evaluation skipped.", score=1)
     if profile.workflow in {"hybrid", "iterative_evaluator"}:
         for iteration in range(max(profile.max_iterations, 1)):
-            evaluation, eval_step = await evaluate(request, draft, complete, activity)
+            evaluation, eval_step = await evaluate(
+                request, draft, complete, activity, iteration=iteration,
+                parent_ids=[draft_step_id] if draft_step_id else None,
+            )
             emit(eval_step)
             if evaluation.status == "PASS" or iteration == profile.max_iterations - 1:
                 break
-            draft, refine_step = await refine(request, draft, evaluation, complete, activity)
+            draft, refine_step = await refine(
+                request, draft, evaluation, complete, activity, iteration=iteration,
+                parent_ids=[eval_step.id],
+            )
             emit(refine_step)
+            draft_step_id = refine_step.id
 
     record = RunRecord(
         profile_name=profile.name,

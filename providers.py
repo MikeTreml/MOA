@@ -9,7 +9,7 @@ from loguru import logger
 
 
 DEBUG = int(os.environ.get("DEBUG", "0"))
-DEFAULT_BASE_URL = "http://127.0.0.1:1235/v1"  # llama.cpp / OpenAI-compatible
+DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"  # LM Studio / any OpenAI-compatible server
 TOGETHER_BASE_URL = "https://api.together.xyz/v1"
 
 # Per-request wall-clock ceiling so a hung server can't stall a call for the
@@ -289,6 +289,8 @@ async def generate_chat_completion_async(
     response_format=None,
     base_url: str | None = None,
     api_key: str | None = None,
+    frequency_penalty: float | None = None,
+    presence_penalty: float | None = None,
 ):
     config = get_provider_config(provider, base_url=base_url, api_key=api_key)
     client = _async_client_from_config(config)
@@ -302,6 +304,10 @@ async def generate_chat_completion_async(
     }
     if response_format is not None:
         kwargs["response_format"] = response_format
+    if frequency_penalty is not None:
+        kwargs["frequency_penalty"] = frequency_penalty
+    if presence_penalty is not None:
+        kwargs["presence_penalty"] = presence_penalty
     try:
         return await client.chat.completions.create(**kwargs)
     finally:
@@ -319,6 +325,8 @@ async def stream_chat_completion_async(
     provider: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
+    frequency_penalty: float | None = None,
+    presence_penalty: float | None = None,
 ):
     """Yield content deltas from an OpenAI-compatible streaming completion.
 
@@ -326,14 +334,19 @@ async def stream_chat_completion_async(
     a synchronous stream iterator."""
     config = get_provider_config(provider, base_url=base_url, api_key=api_key)
     client = _async_client_from_config(config)
+    kwargs = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature if temperature > 1e-4 else 0,
+        "max_tokens": max_tokens,
+        "stream": True,
+    }
+    if frequency_penalty is not None:
+        kwargs["frequency_penalty"] = frequency_penalty
+    if presence_penalty is not None:
+        kwargs["presence_penalty"] = presence_penalty
     try:
-        stream = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature if temperature > 1e-4 else 0,
-            max_tokens=max_tokens,
-            stream=True,
-        )
+        stream = await client.chat.completions.create(**kwargs)
         async for chunk in stream:
             choices = getattr(chunk, "choices", None)
             if not choices:

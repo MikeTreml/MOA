@@ -52,7 +52,7 @@ With `serve_stack.py` running:
 $env:NODE_PATH="ui/node_modules"; node e2e\graph_test.cjs
 ```
 Starts a flow, opens `activity.html?run_id=…`, and asserts the graph renders one
-node per agent with live stats (overall timer / active count / agent count),
+node per agent with live stats (overall timer / active count / step count),
 pulses while running, and reveals an agent's feed on click.
 Expect `graph nodes: 5`, `RESULT: PASS`.
 

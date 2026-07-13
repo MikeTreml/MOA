@@ -121,7 +121,7 @@ class GraphExecutionTests(unittest.TestCase):
                 output="final",
             )
             profile = Profile(
-                name="G", provider="lmstudio", workflow="graph", graph=graph,
+                name="G", provider="openai-compatible", workflow="graph", graph=graph,
                 aggregator_model="m",
             )
             steps = []
@@ -139,6 +139,40 @@ class GraphExecutionTests(unittest.TestCase):
         self.assertEqual(steps.count("work"), 2)
         self.assertIn("plan", steps)
         self.assertIn("final", steps)
+
+    def test_graph_trace_steps_carry_upstream_dep_ids(self):
+        async def scenario():
+            from workbench.schemas import FlowGraph, GraphNode, Profile, RunRequest
+            from workbench.workflow import run_workflow
+
+            async def fake(model, messages, profile, json_mode=False, on_token=None, **kwargs):
+                p = messages[0]["content"]
+                if "as json" in p.lower():
+                    return '{"items":["alpha","beta"]}'
+                if p.startswith("do "):
+                    return "did:" + p
+                return "FINAL"
+
+            graph = FlowGraph(
+                nodes=[
+                    GraphNode(id="plan", kind="llm", prompt="List items as JSON for: {input}", lane=0),
+                    GraphNode(id="work", kind="fanout", over="plan", prompt="do {item}", lane=1),
+                    GraphNode(id="final", kind="llm", depends_on=["work"], prompt="synthesize {{work}}", lane=2),
+                ],
+                output="final",
+            )
+            profile = Profile(name="G", workflow="graph", graph=graph, aggregator_model="m")
+            return await run_workflow(RunRequest(prompt="x", profile=profile), complete_fn=fake)
+
+        record = asyncio.run(scenario())
+        plan = next(s for s in record.trace if s.stage == "plan")
+        works = [s for s in record.trace if s.stage == "work"]
+        final = next(s for s in record.trace if s.stage == "final")
+        # Each fanout instance points at the node it fans over; the join points
+        # at every instance that fed it.
+        for work in works:
+            self.assertEqual(work.metadata["deps"], [plan.id])
+        self.assertEqual(sorted(final.metadata["deps"]), sorted(w.id for w in works))
 
     def test_fanout_items_parses_bare_json_array_and_object_and_lines(self):
         from workbench.workflow import _fanout_items

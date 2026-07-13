@@ -1,7 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
-import { Cpu, Layers3, Network, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Cpu, ExternalLink, Layers3, Network, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
 import type { ActivityStage } from "./types";
 import type { RunActivityState } from "./useRunActivity";
+
+interface EdgePath {
+  key: string;
+  d: string;
+  active: boolean;
+}
+
+export function agentPopoutUrl(runId: string, stage: ActivityStage): string {
+  const title = encodeURIComponent(stage.title || stage.stage);
+  return `activity.html?run_id=${encodeURIComponent(runId)}&step_id=${encodeURIComponent(stage.id)}&title=${title}`;
+}
 
 const STAGE_ICON: Record<string, typeof Cpu> = {
   orchestrator: Network,
@@ -19,6 +30,12 @@ const STAGE_COLUMN: Record<string, number> = {
   evaluator: 3,
   refiner: 4
 };
+
+// Stages that stream tokens live. Only for these does "running with no output
+// yet" mean the request is waiting (queued on the server, or a reasoning model
+// still thinking) — orchestrator/evaluator/gates run in JSON mode and never
+// stream, so token absence there is normal.
+const STREAMING_STAGES = new Set(["worker", "synthesizer", "refiner"]);
 
 function columnOf(stage: string): number {
   return STAGE_COLUMN[stage] ?? 1;
@@ -66,7 +83,14 @@ const STATUS_LABEL: Record<string, string> = {
   stopped: "Stopped"
 };
 
-export function FlowGraph({ activity }: { activity: RunActivityState }) {
+export function FlowGraph({
+  activity,
+  runId
+}: {
+  activity: RunActivityState;
+  /** When set, each node offers "open this agent in its own window". */
+  runId?: string | null;
+}) {
   const { stages, status, record, error, reconnecting } = activity;
   const running = status === "running";
   const now = useTick(running);
@@ -102,6 +126,61 @@ export function FlowGraph({ activity }: { activity: RunActivityState }) {
 
   const selected = stages.find((s) => s.id === selectedId) ?? null;
 
+  // Real flow edges: each stage carries the step ids that feed it (emitted by
+  // the backend), so we can draw who-feeds-whom instead of generic connectors.
+  const edgePairs = useMemo(() => {
+    const known = new Set(stages.map((s) => s.id));
+    const pairs: Array<{ from: string; to: string; active: boolean }> = [];
+    for (const stage of stages) {
+      for (const dep of stage.deps ?? []) {
+        if (known.has(dep)) pairs.push({ from: dep, to: stage.id, active: stage.status === "running" });
+      }
+    }
+    return pairs;
+  }, [stages]);
+
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const nodeRefs = useRef(new Map<string, HTMLElement>());
+  const [edges, setEdges] = useState<EdgePath[]>([]);
+  const [, bumpLayout] = useState(0);
+
+  useEffect(() => {
+    const onResize = () => bumpLayout((n) => n + 1);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Measure after every render (node heights shift as token counts stream in);
+  // setEdges keeps the previous array identity when nothing moved, so this
+  // cannot loop.
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || edgePairs.length === 0) {
+      setEdges((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+    const cbox = canvas.getBoundingClientRect();
+    const next: EdgePath[] = [];
+    for (const pair of edgePairs) {
+      const from = nodeRefs.current.get(pair.from);
+      const to = nodeRefs.current.get(pair.to);
+      if (!from || !to) continue;
+      const fbox = from.getBoundingClientRect();
+      const tbox = to.getBoundingClientRect();
+      const sx = fbox.right - cbox.left + canvas.scrollLeft;
+      const sy = fbox.top + fbox.height / 2 - cbox.top + canvas.scrollTop;
+      const tx = tbox.left - cbox.left + canvas.scrollLeft;
+      const ty = tbox.top + tbox.height / 2 - cbox.top + canvas.scrollTop;
+      const bend = Math.max(24, (tx - sx) / 2);
+      next.push({
+        key: `${pair.from}->${pair.to}`,
+        d: `M ${sx} ${sy} C ${sx + bend} ${sy}, ${tx - bend} ${ty}, ${tx} ${ty}`,
+        active: pair.active
+      });
+    }
+    setEdges((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+  });
+
   return (
     <div className="flowGraph">
       <div className="graphStats">
@@ -112,13 +191,33 @@ export function FlowGraph({ activity }: { activity: RunActivityState }) {
         {reconnecting && <span className="reconnecting">Reconnecting…</span>}
         <span className="graphStat">⏱ {formatMs(overall)}</span>
         <span className="graphStat">◉ {activeCount} active</span>
-        <span className="graphStat">{stages.length} agents</span>
+        <span className="graphStat">{stages.length} steps</span>
       </div>
 
       {stages.length === 0 ? (
         <p className="empty">{running ? "Waiting for the first agent…" : "No activity."}</p>
       ) : (
-        <div className="graphCanvas">
+        <div className="graphCanvas" ref={canvasRef}>
+          {edges.length > 0 && (
+            <svg className="graphEdges" aria-hidden="true">
+              <defs>
+                <marker id="edgeArrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M0,0.5 L7.5,4 L0,7.5 Z" className="edgeArrowHead" />
+                </marker>
+                <marker id="edgeArrowActive" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M0,0.5 L7.5,4 L0,7.5 Z" className="edgeArrowHeadActive" />
+                </marker>
+              </defs>
+              {edges.map((edge) => (
+                <path
+                  key={edge.key}
+                  d={edge.d}
+                  className={edge.active ? "edgeActive" : ""}
+                  markerEnd={`url(#${edge.active ? "edgeArrowActive" : "edgeArrow"})`}
+                />
+              ))}
+            </svg>
+          )}
           {columns.map(({ c, nodes }, colIndex) => (
             <div className="graphColumn" key={c}>
               <div className="graphNodes">
@@ -126,14 +225,23 @@ export function FlowGraph({ activity }: { activity: RunActivityState }) {
                   const Icon = STAGE_ICON[stage.stage] ?? Sparkles;
                   const ms = elapsedMs(stage, now);
                   const tokens = approxTokens(stage);
+                  const waiting =
+                    stage.status === "running" &&
+                    STREAMING_STAGES.has(stage.stage) &&
+                    !stage.tokens &&
+                    !stage.output;
                   return (
                     <button
                       key={stage.id}
-                      className={`graphNode ${stage.status} ${selectedId === stage.id ? "selected" : ""}`}
+                      ref={(el) => {
+                        if (el) nodeRefs.current.set(stage.id, el);
+                        else nodeRefs.current.delete(stage.id);
+                      }}
+                      className={`graphNode ${stage.status} ${waiting ? "waiting" : ""} ${selectedId === stage.id ? "selected" : ""}`}
                       onClick={() => setSelectedId(selectedId === stage.id ? null : stage.id)}
                       title="Click to view this agent's feed"
                     >
-                      {stage.status === "running" && <span className="nodePulse" aria-hidden="true" />}
+                      {stage.status === "running" && !waiting && <span className="nodePulse" aria-hidden="true" />}
                       <span className="nodeIcon">
                         <Icon size={15} />
                       </span>
@@ -141,13 +249,36 @@ export function FlowGraph({ activity }: { activity: RunActivityState }) {
                       {stage.model && <span className="nodeModel">{stage.model}</span>}
                       <span className="nodeStats">
                         <span>⏱ {formatMs(ms)}</span>
+                        {waiting && <span className="nodeWaiting">waiting…</span>}
                         {tokens > 0 && <span title="approximate (chars ÷ 4)">≈{tokens.toLocaleString()} tok</span>}
+                        {runId && (
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            className="nodePop"
+                            title="Open this agent in its own window"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              window.open(agentPopoutUrl(runId, stage), `moa-agent-${stage.id}`, "width=460,height=640,resizable=yes");
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.stopPropagation();
+                                window.open(agentPopoutUrl(runId, stage), `moa-agent-${stage.id}`, "width=460,height=640,resizable=yes");
+                              }
+                            }}
+                          >
+                            <ExternalLink size={12} />
+                          </span>
+                        )}
                       </span>
                     </button>
                   );
                 })}
               </div>
-              {colIndex < columns.length - 1 && <div className="graphConnector" aria-hidden="true" />}
+              {colIndex < columns.length - 1 && edgePairs.length === 0 && (
+                <div className="graphConnector" aria-hidden="true" />
+              )}
             </div>
           ))}
           {hasRefiner && <div className="graphLoopHint">↺ refiner loops back to evaluator</div>}

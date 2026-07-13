@@ -46,7 +46,7 @@ python advanced-moa.py
 
 ## Local and OpenAI-Compatible Providers
 
-This workspace has been modified to use an OpenAI-compatible provider layer. It defaults to LM Studio instead of Together.
+This workspace has been modified to use an OpenAI-compatible provider layer. It defaults to a local LM Studio server (`openai-compatible` at `http://127.0.0.1:1234/v1`) instead of Together — LM Studio can serve several models from one endpoint, which a mixture of agents needs (a llama.cpp `llama-server` process hosts only one model). Any OpenAI-compatible server works — LM Studio, llama.cpp, vLLM, a proxy — by pointing `MOA_BASE_URL` at it.
 
 ## Hybrid MoA Workbench
 
@@ -77,27 +77,31 @@ npm run dev
 
 Saved profiles and run history are stored under `%LOCALAPPDATA%\MoAWorkbench`.
 
-The Profiles tab includes presets for LM Studio, OMP ChatGPT/Claude routing, generic OpenAI-compatible proxies, Together, and an Atomic Agents placeholder. Profiles store provider names, base URLs, model IDs, and allowed file roots; API keys are read from environment variables such as `OMP_API_KEY`, `TOGETHER_API_KEY`, or `MOA_API_KEY` and are not saved in profile JSON.
+The Profiles tab includes presets for llama.cpp, OMP ChatGPT/Claude routing, generic OpenAI-compatible proxies, Together, and an Atomic Agents placeholder. Profiles store provider names, base URLs, model IDs, and allowed file roots; API keys are read from environment variables such as `OMP_API_KEY`, `TOGETHER_API_KEY`, or `MOA_API_KEY` and are not saved in profile JSON.
 
-### LM Studio
+### LM Studio (default — or llama.cpp / any local OpenAI-compatible server)
 
-1. Start LM Studio's local server.
-2. Load a chat model.
-3. Set the model id shown by LM Studio, then run MoA:
+1. Start LM Studio's local server (default port 1234), load your models, and **enable parallel requests** in its server settings — the Workbench fans workers out concurrently, and a serialized server will queue them so runs look serial. Loading two or more different models gives you a real mixture; assign them roles on the Models tab.
+
+2. Point MoA at the server and run:
 
 ```powershell
-$env:MOA_PROVIDER = "lmstudio"
+$env:MOA_PROVIDER = "openai-compatible"
 $env:MOA_BASE_URL = "http://127.0.0.1:1234/v1"
-$env:MOA_MODEL = "your-lm-studio-model-id"
-$env:MOA_REFERENCE_MODELS = "your-lm-studio-model-id,your-lm-studio-model-id,your-lm-studio-model-id"
+$env:MOA_MODEL = "your-model-id"
+$env:MOA_REFERENCE_MODELS = "your-model-id,another-model-id,your-model-id"
 .\.venv\Scripts\python.exe bot.py
 ```
+
+llama.cpp alternative: `llama-server -m your-model.gguf --port 1235 --parallel 4` and set `MOA_BASE_URL` to `http://127.0.0.1:1235/v1`. Note that one `llama-server` process hosts **one** model, so it suits self-ensembles rather than multi-model mixtures; the Workbench reads its slot count from `/props` and warns in the Run tab when the configured workers exceed it.
 
 For a quick one-file example:
 
 ```powershell
 .\.venv\Scripts\python.exe moa.py
 ```
+
+> Note: a true *mixture* of agents needs more than one distinct model. With a single local model everywhere, runs are a self-ensemble (the GUI shows a notice when that's the case) — add a second local model or a cloud API model in the Profiles tab for real diversity.
 
 ### OMP or another OpenAI-compatible proxy
 
@@ -112,7 +116,7 @@ $env:MOA_REFERENCE_MODELS = "gpt-4o-mini,claude-3-5-sonnet-latest"
 .\.venv\Scripts\python.exe bot.py
 ```
 
-Provider options: `lmstudio`, `together`, `openai`, `omp`, `openai-compatible`, and `atomic`. The `atomic` option is intentionally a placeholder in `atomic_agents_adapter.py`.
+Provider options: `openai-compatible` (aliases: `local`, `llamacpp`, `custom`), `together`, `openai`, `omp`, and `atomic`. There is no `lmstudio` provider — LM Studio is just an OpenAI-compatible server, so use `openai-compatible` with its base URL (usually `http://127.0.0.1:1234/v1`). The `atomic` option is intentionally a placeholder in `atomic_agents_adapter.py`.
 
 ## Interactive CLI Demo
 
@@ -137,7 +141,7 @@ The demo will ask you to specify certain options but if you want to do additiona
 
 - `--model`: The primary model used for final response generation.
 - `--reference-models`: List of models used as references.
-- `--provider`: Backend provider to use (`lmstudio`, `together`, `openai`, `omp`, `openai-compatible`, or `atomic`).
+- `--provider`: Backend provider to use (`openai-compatible`, `together`, `openai`, `omp`, or `atomic`).
 - `--temperature`: Controls the randomness of the response generation.
 - `--max-tokens`: Maximum number of tokens in the response.
 - `--rounds`: Number of rounds to process the input for refinement. (num rounds == num of MoA layers - 1)

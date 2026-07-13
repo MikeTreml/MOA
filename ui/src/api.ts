@@ -1,4 +1,4 @@
-import type { FlowGraph, GeneratedImage, LmModel, LmStudioStatus, ModelPlan, Profile, ProviderPreset, RunRecord } from "./types";
+import type { FlowGraph, GeneratedImage, Profile, ProviderModel, ProviderPreset, ProviderStatus, RunRecord } from "./types";
 
 const TOKEN_KEY = "moa-api-token";
 
@@ -45,8 +45,8 @@ async function request<T>(path: string, init?: RequestInit, retry = true): Promi
 }
 
 export const api = {
-  status: () => request<LmStudioStatus>("/api/status"),
-  models: () => request<{ models: LmModel[]; loaded: Array<Record<string, unknown>> }>("/api/models"),
+  status: () => request<ProviderStatus>("/api/status"),
+  models: () => request<{ models: ProviderModel[] }>("/api/models"),
   providerPresets: () => request<{ presets: ProviderPreset[] }>("/api/provider-presets"),
   profiles: () => request<{ profiles: Profile[]; active: string }>("/api/profiles"),
   saveProfile: (profile: Profile) =>
@@ -116,19 +116,26 @@ export function runEventsUrl(runId: string): string {
   return `/api/runs/${runId}/events${suffix}`;
 }
 
-export function modelKey(model: LmModel): string {
+export function modelKey(model: ProviderModel): string {
   return model.modelKey ?? model.model_key ?? "";
 }
 
-export function modelName(model: LmModel): string {
+export function modelName(model: ProviderModel): string {
   return model.displayName ?? model.display_name ?? modelKey(model);
 }
 
-export function modelSize(model: LmModel): number {
+export function modelSize(model: ProviderModel): number {
   return model.sizeBytes ?? model.size_bytes ?? 0;
 }
 
 export function formatBytes(bytes: number): string {
   if (!bytes) return "0 GB";
   return `${(bytes / 1024 ** 3).toFixed(bytes > 10 * 1024 ** 3 ? 1 : 2)} GB`;
+}
+
+/** "~4.2 GB" for estimates, "4.2 GB" for server-reported sizes, "" if unknown. */
+export function modelSizeLabel(model: ProviderModel): string {
+  const size = modelSize(model);
+  if (!size) return "";
+  return `${model.sizeIsEstimate ? "~" : ""}${formatBytes(size)}`;
 }
