@@ -1177,6 +1177,98 @@ code {
 }
 
 /* Custom-graph editor (Profiles tab) */
+.reviewPolicyInline {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.reviewPolicyInline > strong {
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.reviewPolicyInline > small {
+  color: var(--text-3);
+  line-height: 1.45;
+}
+
+/* 22 catalog categories — compact multi-column checkbox grid. */
+.reviewCategoryToggles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 6px 12px;
+  font-size: 12.5px;
+}
+
+.reviewCategoryToggles label,
+.reviewAgentToggle {
+  display: flex;
+  grid-template-columns: none;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 9px;
+  font-weight: 550;
+}
+
+.reviewCategoryToggles input,
+.reviewAgentToggle input {
+  width: 17px;
+  height: 17px;
+  min-height: 0;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+}
+
+.reviewPolicyPanel {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.reviewAgentGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.reviewAgentCard {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+  opacity: 0.62;
+}
+
+.reviewAgentCard.selected {
+  border-color: var(--accent);
+  opacity: 1;
+}
+
+.reviewAgentToggle span {
+  display: grid;
+  gap: 3px;
+}
+
+.reviewAgentToggle strong {
+  color: var(--text-1);
+}
+
+.reviewAgentCard small {
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
 .graphEditor {
   display: grid;
   gap: 10px;
