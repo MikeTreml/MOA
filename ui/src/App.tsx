@@ -227,6 +227,13 @@ function App() {
     localStorage.setItem("moa-theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    // Each tab is a separate screen. Keeping the previous document scroll
+    // position can land a user halfway down a shorter screen (especially after
+    // leaving Profiles on mobile), making the new tab look blank or broken.
+    window.scrollTo({ top: 0, left: 0 });
+  }, [tab]);
+
   const activity = useRunActivity(activeRunId, (record) => {
     setLatestRun(record);
     api.runs().then((payload) => setRuns(payload.runs)).catch(() => undefined);
@@ -252,7 +259,12 @@ function App() {
     setReviewCatalog(reviewPayload);
     setStatus(statusPayload);
     setRuns(runPayload.runs);
-    setLatestRun((prev) => prev ?? runPayload.runs[0] ?? null);
+    // Refresh the selected record from the server instead of preserving a
+    // stale object forever. This matters after another window applies/rejects
+    // a proposed change or updates run history.
+    setLatestRun((prev) =>
+      runPayload.runs.find((run) => run.id === prev?.id) ?? runPayload.runs[0] ?? null
+    );
     setDirty(false);
     setBootError(null);
   }
@@ -385,10 +397,6 @@ function App() {
     if (!profile) return;
     const current = profile.review_policy.categories;
     const selected = current.includes(category);
-    if (selected && current.length === 1) {
-      setMessage("Bounded review needs at least one category.");
-      return;
-    }
     const categories = selected
       ? current.filter((item) => item !== category)
       : [...current, category];
@@ -855,7 +863,14 @@ function App() {
           </div>
         </header>
 
-        {message && <div className="notice">{message}</div>}
+        {message && (
+          <div className="notice" role="status">
+            <span>{message}</span>
+            <button type="button" className="noticeDismiss" aria-label="Dismiss notification" onClick={() => setMessage("")}>
+              <XCircle size={16} />
+            </button>
+          </div>
+        )}
 
         {tab === "run" && (
           <div className="runGrid">
@@ -1631,7 +1646,9 @@ function App() {
                         await api.deleteRun(run.id);
                         const refreshed = await api.runs();
                         setRuns(refreshed.runs);
-                        if (latestRun?.id === run.id) setLatestRun(null);
+                        if (latestRun?.id === run.id) {
+                          setLatestRun(refreshed.runs[0] ?? null);
+                        }
                       } catch (error) {
                         setMessage(error instanceof Error ? error.message : String(error));
                       }

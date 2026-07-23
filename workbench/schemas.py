@@ -131,10 +131,7 @@ class ReviewPolicy(BaseModel):
             "test_coverage": ["testing"],
         }
         expanded = [replacement for item in value for replacement in legacy.get(item, [item])]
-        unique = list(dict.fromkeys(expanded))
-        if not unique:
-            raise ValueError("Bounded review needs at least one category.")
-        return unique
+        return list(dict.fromkeys(expanded))
 
     @field_validator("excluded_skill_ids")
     @classmethod

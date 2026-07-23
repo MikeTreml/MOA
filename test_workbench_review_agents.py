@@ -9,8 +9,6 @@ from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
-from pydantic import ValidationError
-
 
 AGENT_PREFIX = "You are a bounded code-review worker"
 VERIFIER_PREFIX = "You verify"
@@ -145,11 +143,10 @@ class ReviewPolicyTests(unittest.TestCase):
 
         self.assertEqual(ReviewPolicy(categories=["security", "security"]).categories, ["security"])
 
-    def test_empty_categories_rejected(self):
+    def test_empty_categories_can_be_saved(self):
         from workbench.schemas import ReviewPolicy
 
-        with self.assertRaises(ValidationError):
-            ReviewPolicy(categories=[])
+        self.assertEqual(ReviewPolicy(categories=[]).categories, [])
 
     def test_excluded_skill_ids_strip_blanks_and_dedupe(self):
         from workbench.schemas import ReviewPolicy

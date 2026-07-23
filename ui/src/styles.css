@@ -295,9 +295,22 @@ h1, h2 {
   margin-bottom: 16px;
   border: 1px solid var(--amber-soft);
   border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 10px 13px;
   background: var(--amber-soft);
   color: var(--amber-text);
+}
+
+.noticeDismiss {
+  flex: 0 0 auto;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
 }
 
 .runGrid {
@@ -1824,6 +1837,15 @@ code {
   }
 
   .topActions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .sectionHeader {
+    flex-direction: column;
+  }
+
+  .runActions {
     width: 100%;
     justify-content: space-between;
   }
