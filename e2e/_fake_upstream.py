@@ -40,6 +40,11 @@ def make_handler(token_delay: float = 0.0):
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
+            if self.path == "/__test__/reset-gate":
+                _GATE_CALLS["n"] = 0
+                self.send_response(204)
+                self.end_headers()
+                return
             if "images" in self.path:
                 n = int(body.get("n", 1) or 1)
                 payload = {"created": 0, "data": [{"b64_json": TINY_PNG_B64} for _ in range(n)]}
@@ -70,7 +75,10 @@ def make_handler(token_delay: float = 0.0):
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
                 return
-            if "return only json" in last.lower() and "score" in last.lower():
+            # Match graph-gate prompts specifically. Ordinary evaluator prompts
+            # also request JSON containing a score and used to consume this
+            # stateful counter, making the loop test depend on execution order.
+            if "return only json" in last.lower() and "criteria:" in last.lower():
                 # Gate scoring: fail the first two evaluations, then pass.
                 _GATE_CALLS["n"] += 1
                 value = 0.2 if _GATE_CALLS["n"] <= 2 else 0.9

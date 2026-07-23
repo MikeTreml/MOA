@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def now_iso() -> str:
@@ -81,12 +81,125 @@ class CloudModel(BaseModel):
     base_url: str = ""  # optional override; required for omp/openai-compatible
 
 
+ReviewCategory = str
+
+
+def default_review_categories() -> list[ReviewCategory]:
+    """Every catalog domain is enabled by default; categories organize work only."""
+    return [
+        "performance_efficiency",
+        "maintainability",
+        "testing",
+        "error_handling",
+        "architecture",
+        "dependencies",
+        "concurrency",
+        "edge_cases",
+        "logic_correctness",
+        "operations",
+        "review_strategy",
+        "data_refresh",
+        "state_management",
+        "ui_visual",
+        "forms",
+        "resource_management",
+        "ui_interaction",
+        "accessibility",
+        "backend_data",
+        "api_contract",
+        "security",
+        "observability",
+    ]
+
+
+class ReviewPolicy(BaseModel):
+    """Exhaustive review policy: one atomic checklist skill per bounded agent."""
+
+    findings_per_skill: Literal[1] = 1
+    # Accepted only to migrate profiles saved by the earlier category-sampling
+    # implementation. It is deliberately excluded and never limits coverage.
+    findings_per_agent: Literal[1] = Field(default=1, exclude=True)
+    max_findings_per_category: int | None = Field(default=None, ge=1, le=5, exclude=True)
+    categories: list[ReviewCategory] = Field(default_factory=default_review_categories)
+    excluded_skill_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("categories")
+    @classmethod
+    def validate_categories(cls, value: list[ReviewCategory]) -> list[ReviewCategory]:
+        legacy = {
+            "business_logic": ["logic_correctness", "edge_cases"],
+            "test_coverage": ["testing"],
+        }
+        expanded = [replacement for item in value for replacement in legacy.get(item, [item])]
+        return list(dict.fromkeys(expanded))
+
+    @field_validator("excluded_skill_ids")
+    @classmethod
+    def validate_excluded_skill_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if item.strip()))
+
+
+class ReviewSkillSource(BaseModel):
+    ordinal: int = Field(ge=1)
+    section: str
+    text: str
+
+
+class ReviewSkillDefinition(BaseModel):
+    id: str
+    category: ReviewCategory
+    section: str
+    question: str
+    source_items: list[ReviewSkillSource]
+
+
+class ReviewCategoryDefinition(BaseModel):
+    id: ReviewCategory
+    title: str
+    mission: str
+    scopes: list[str]
+    exclusions: list[str]
+    skill_count: int = Field(ge=1)
+
+
+class ReviewCatalog(BaseModel):
+    version: int = Field(ge=1)
+    source: str
+    source_item_count: int = Field(ge=1)
+    atomic_skill_count: int = Field(ge=1)
+    merged_duplicate_count: int = Field(ge=0)
+    deduplication_rule: str
+    findings_per_skill: Literal[1] = 1
+    verifier_batch_size: int = Field(ge=1, le=100)
+    categories: list[ReviewCategoryDefinition]
+    skills: list[ReviewSkillDefinition]
+
+class ReviewFinding(BaseModel):
+    title: str = Field(min_length=3, max_length=160)
+    severity: Literal["critical", "high", "medium", "low"]
+    file: str = Field(min_length=1, max_length=1000)
+    location: str = Field(min_length=1, max_length=300)
+    evidence: str = Field(min_length=8, max_length=4000)
+    impact: str = Field(min_length=8, max_length=2000)
+    verification: str = Field(min_length=8, max_length=2000)
+
+
+class ReviewAgentResult(BaseModel):
+    status: Literal["finding", "exhausted", "not_applicable", "blocked"]
+    # Defaulted because the parser overwrites it on every path — an agent that
+    # omits it must not be blocked on a technicality.
+    skill_status: Literal["partial", "exhausted", "not_applicable", "blocked"] = "blocked"
+    files_inspected: list[str] = Field(default_factory=list)
+    finding: ReviewFinding | None = None
+    blocked_reason: str = ""
+
+
 class Profile(BaseModel):
     name: str = "LM Studio"
     provider: str = "openai-compatible"
     base_url: str = Field(default_factory=default_base_url)
     memory_cap_gb: float = 80
-    workflow: Literal["hybrid", "parallel_subtask", "iterative_evaluator", "graph"] = "hybrid"
+    workflow: Literal["hybrid", "parallel_subtask", "iterative_evaluator", "graph", "bounded_review"] = "hybrid"
     worker_models: list[str] = Field(default_factory=lambda: ["qwen-3b", "qwen-3b"])
     aggregator_model: str = "qwen-3b"
     evaluator_model: str = "qwen-3b"
@@ -99,6 +212,7 @@ class Profile(BaseModel):
     allowed_roots: list[str] = Field(default_factory=default_allowed_roots)
     graph: FlowGraph | None = None  # used when workflow == "graph"
     cloud_models: list[CloudModel] = Field(default_factory=list)
+    review_policy: ReviewPolicy = Field(default_factory=ReviewPolicy)
 
 
 class GraphCheck(BaseModel):

@@ -28,7 +28,7 @@ import { api, modelKey, modelName, modelSizeLabel } from "./api";
 import { ActivityView } from "./ActivityView";
 import { GraphBuilder } from "./GraphBuilder";
 import { useRunActivity, type RunActivityState } from "./useRunActivity";
-import type { ActivityStage, CloudModel, FileChange, GeneratedImage, Profile, ProviderModel, ProviderPreset, ProviderStatus, RunRecord, Workflow } from "./types";
+import type { ActivityStage, CloudModel, FileChange, GeneratedImage, Profile, ProviderModel, ProviderPreset, ProviderStatus, ReviewCatalog, RunRecord, Workflow } from "./types";
 
 function recordToActivity(record: RunRecord | null): RunActivityState {
   if (!record) return { stages: [], record: null, status: "idle", error: null, reconnecting: false };
@@ -77,7 +77,8 @@ const workflowLabels: Record<Workflow, string> = {
   hybrid: "Hybrid",
   parallel_subtask: "Subtask Parallel",
   iterative_evaluator: "Iterative Eval",
-  graph: "Custom Graph"
+  graph: "Custom Graph",
+  bounded_review: "Bounded Review"
 };
 
 // One honest sentence per shape — the Run tab subtitle must describe the
@@ -86,7 +87,8 @@ const workflowDescriptions: Record<Workflow, string> = {
   hybrid: "Decomposes into one subtask per worker, runs workers in parallel, synthesizes, then evaluates and refines.",
   parallel_subtask: "Decomposes into one subtask per worker, runs workers in parallel, and synthesizes — no evaluation loop.",
   iterative_evaluator: "Synthesizes directly from the prompt, then evaluates and refines — no workers.",
-  graph: "Runs your custom flow graph exactly as authored in the Profiles tab."
+  graph: "Runs your custom flow graph exactly as authored in the Profiles tab.",
+  bounded_review: "Runs one bounded agent per atomic checklist skill, then verifies candidates in batches and reports coverage honestly."
 };
 
 const SEED_GRAPH = JSON.stringify(
@@ -191,6 +193,7 @@ function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [presets, setPresets] = useState<ProviderPreset[]>([]);
   const [models, setModels] = useState<ProviderModel[]>([]);
+  const [reviewCatalog, setReviewCatalog] = useState<ReviewCatalog | null>(null);
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [latestRun, setLatestRun] = useState<RunRecord | null>(null);
@@ -224,6 +227,13 @@ function App() {
     localStorage.setItem("moa-theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    // Each tab is a separate screen. Keeping the previous document scroll
+    // position can land a user halfway down a shorter screen (especially after
+    // leaving Profiles on mobile), making the new tab look blank or broken.
+    window.scrollTo({ top: 0, left: 0 });
+  }, [tab]);
+
   const activity = useRunActivity(activeRunId, (record) => {
     setLatestRun(record);
     api.runs().then((payload) => setRuns(payload.runs)).catch(() => undefined);
@@ -238,13 +248,23 @@ function App() {
       api.status(),
       api.runs()
     ]);
+    // The review catalog only decorates the bounded-review UI — a failure here
+    // must not fail the whole boot with a misleading "backend unreachable"
+    // error. Every consumer already guards on reviewCatalog being non-null.
+    const reviewPayload = await api.reviewCatalog().catch(() => null);
     setProfiles(profilePayload.profiles);
     setProfile(profilePayload.profiles.find((item) => item.name === profilePayload.active) ?? profilePayload.profiles[0]);
     setPresets(presetPayload.presets);
     setModels(modelPayload.models);
+    setReviewCatalog(reviewPayload);
     setStatus(statusPayload);
     setRuns(runPayload.runs);
-    setLatestRun((prev) => prev ?? runPayload.runs[0] ?? null);
+    // Refresh the selected record from the server instead of preserving a
+    // stale object forever. This matters after another window applies/rejects
+    // a proposed change or updates run history.
+    setLatestRun((prev) =>
+      runPayload.runs.find((run) => run.id === prev?.id) ?? runPayload.runs[0] ?? null
+    );
     setDirty(false);
     setBootError(null);
   }
@@ -318,21 +338,27 @@ function App() {
   const proposedChanges: FileChange[] = latestRun?.file_changes ?? [];
   const activeProviderName = providerDisplayName(profile?.provider ?? "openai-compatible");
 
-  // Honest-parallelism + mixture checks for the Run tab, mirroring the backend:
-  // only hybrid/parallel_subtask run workers, the roster drives the fan-out
-  // (capped at MAX_WORKERS=8), an empty roster falls back to 3× the first
-  // configured model, and cloud-alias workers never touch the local server.
+  // Honest parallelism and mixture checks for workflows that dispatch workers.
+  // Hybrid/parallel use the roster as their fan-out (capped at MAX_WORKERS=8;
+  // an empty roster falls back to 3× the first configured model); bounded
+  // review uses it as concurrency (one fallback slot). Cloud aliases are remote.
   const runsWorkers = profile
-    ? profile.workflow === "hybrid" || profile.workflow === "parallel_subtask"
+    ? ["hybrid", "parallel_subtask", "bounded_review"].includes(profile.workflow)
     : false;
   const effectiveWorkers = useMemo(() => {
     if (!profile) return [] as string[];
     const roster = profile.worker_models.filter(Boolean);
-    if (roster.length) return roster.slice(0, 8);
+    // Bounded review round-robins over the FULL roster (only concurrency is
+    // capped at 8), so every entry is really used; hybrid/parallel cap the
+    // fan-out itself at MAX_WORKERS=8.
+    if (roster.length) return profile.workflow === "bounded_review" ? roster : roster.slice(0, 8);
     const fallback = profile.aggregator_model || profile.evaluator_model;
-    return fallback ? [fallback, fallback, fallback] : [];
+    return fallback ? Array(profile.workflow === "bounded_review" ? 1 : 3).fill(fallback) : [];
   }, [profile]);
   const workerFanout = runsWorkers ? effectiveWorkers.length : 0;
+  // Actual bounded-review parallelism: at most 8 simultaneous slots regardless
+  // of roster length (the label must show parallelism, not roster size).
+  const boundedSlots = Math.min(effectiveWorkers.length || 1, 8);
   const localWorkerCount = useMemo(() => {
     if (!profile || !runsWorkers) return 0;
     return effectiveWorkers.filter((m) => !(profile.cloud_models ?? []).some((c) => c.alias === m)).length;
@@ -346,10 +372,35 @@ function App() {
   const slotsShort =
     status?.total_slots != null && localWorkerCount > status.total_slots ? status.total_slots : null;
 
+  // How many atomic skills a bounded review will actually run: skill_count over
+  // enabled categories minus the excluded ids that belong to those categories.
+  const enabledSkillCount = useMemo(() => {
+    if (!profile || !reviewCatalog) return 0;
+    const enabled = new Set(profile.review_policy.categories);
+    const total = reviewCatalog.categories
+      .filter((category) => enabled.has(category.id))
+      .reduce((sum, category) => sum + category.skill_count, 0);
+    const excluded = new Set(profile.review_policy.excluded_skill_ids);
+    const excludedInEnabled = reviewCatalog.skills.filter(
+      (skill) => excluded.has(skill.id) && enabled.has(skill.category)
+    ).length;
+    return total - excludedInEnabled;
+  }, [profile, reviewCatalog]);
+
   function updateProfile(patch: Partial<Profile>) {
     if (!profile) return;
     setProfile({ ...profile, ...patch });
     setDirty(true);
+  }
+
+  function toggleReviewCategory(category: string) {
+    if (!profile) return;
+    const current = profile.review_policy.categories;
+    const selected = current.includes(category);
+    const categories = selected
+      ? current.filter((item) => item !== category)
+      : [...current, category];
+    updateProfile({ review_policy: { ...profile.review_policy, categories } });
   }
 
   function selectProfile(next: Profile) {
@@ -812,7 +863,14 @@ function App() {
           </div>
         </header>
 
-        {message && <div className="notice">{message}</div>}
+        {message && (
+          <div className="notice" role="status">
+            <span>{message}</span>
+            <button type="button" className="noticeDismiss" aria-label="Dismiss notification" onClick={() => setMessage("")}>
+              <XCircle size={16} />
+            </button>
+          </div>
+        )}
 
         {tab === "run" && (
           <div className="runGrid">
@@ -876,18 +934,44 @@ function App() {
                     <option value="parallel_subtask">Subtask Parallel</option>
                     <option value="iterative_evaluator">Iterative Eval</option>
                     <option value="graph">Custom Graph</option>
+                    <option value="bounded_review">Bounded Review</option>
                   </select>
                 </label>
-                <label>
-                  Max iterations
-                  <input
-                    type="number"
-                    min={1}
-                    value={profile.max_iterations}
-                    onChange={(event) => updateProfile({ max_iterations: numberOr(event.target.value, profile.max_iterations, 1) })}
-                  />
-                </label>
+                {profile.workflow !== "bounded_review" && (
+                  <label>
+                    Max iterations
+                    <input
+                      type="number"
+                      min={1}
+                      value={profile.max_iterations}
+                      onChange={(event) => updateProfile({ max_iterations: numberOr(event.target.value, profile.max_iterations, 1) })}
+                    />
+                  </label>
+                )}
               </div>
+              {profile.workflow === "bounded_review" && reviewCatalog && (
+                <div className="reviewPolicyInline">
+                  <strong>
+                    {enabledSkillCount} atomic skills will run — one bounded agent and at most one finding each
+                  </strong>
+                  <div className="reviewCategoryToggles">
+                    {reviewCatalog.categories.map((category) => (
+                      <label key={category.id}>
+                        <input
+                          type="checkbox"
+                          checked={profile.review_policy.categories.includes(category.id)}
+                          onChange={() => toggleReviewCategory(category.id)}
+                        />
+                        {category.title} ({category.skill_count})
+                      </label>
+                    ))}
+                  </div>
+                  <small>
+                    Candidates are verified per category in batches of {reviewCatalog.verifier_batch_size}; rejected or
+                    duplicate candidates never enter the report.
+                  </small>
+                </div>
+              )}
             </section>
 
             <section className="panel inspectorPanel">
@@ -897,7 +981,7 @@ function App() {
                 <strong>{activeProviderName}</strong>
               </div>
               <div className="roleList">
-                <span>Workers ({workerFanout})</span>
+                <span>{profile.workflow === "bounded_review" ? `Concurrency slots (${boundedSlots})` : `Workers (${workerFanout})`}</span>
                 {runsWorkers ? (
                   groupWorkers(effectiveWorkers).map(([model, count]) => (
                     <code key={model}>{model}{count > 1 ? ` ×${count}` : ""}</code>
@@ -906,15 +990,27 @@ function App() {
                   <code>{profile.workflow === "graph" ? "per graph nodes" : "none"}</code>
                 )}
                 <span title="Also runs the orchestrator and refiner stages — there is no separate model for those.">
-                  Aggregator
+                  {profile.workflow === "bounded_review" ? "Fallback model" : "Aggregator"}
                 </span>
-                <code>{profile.aggregator_model}</code>
-                <span>Evaluator</span>
-                <code>{profile.evaluator_model}</code>
+                {/* Bounded review resolves these server-side: workers fall back to
+                    aggregator || evaluator; verifier = evaluator || aggregator || workers[0]. */}
+                <code>
+                  {profile.workflow === "bounded_review"
+                    ? profile.aggregator_model || profile.evaluator_model || "none"
+                    : profile.aggregator_model}
+                </code>
+                <span>{profile.workflow === "bounded_review" ? "Verifier" : "Evaluator"}</span>
+                <code>
+                  {profile.workflow === "bounded_review"
+                    ? profile.evaluator_model || profile.aggregator_model || effectiveWorkers[0] || "none"
+                    : profile.evaluator_model}
+                </code>
               </div>
               <p className="providerHint">
-                The aggregator model also runs the <em>orchestrator</em> and <em>refiner</em> stages you'll see
-                during a run; the evaluator scores drafts.
+                {profile.workflow === "bounded_review"
+                  ? "The worker roster limits simultaneous specialist calls; the evaluator independently verifies every candidate."
+                  : <>The aggregator model also runs the <em>orchestrator</em> and <em>refiner</em> stages you'll see
+                    during a run; the evaluator scores drafts.</>}
               </p>
               <button className="secondaryButton" onClick={saveProfile} disabled={busy}>
                 <Save size={16} /> Save setup
@@ -1370,6 +1466,44 @@ function App() {
               </label>
             </div>
 
+            {profile.workflow === "bounded_review" && reviewCatalog && (
+              <section className="reviewPolicyPanel">
+                <div className="sectionHeader">
+                  <div>
+                    <h2>Bounded Review Catalog</h2>
+                    <p>
+                      {reviewCatalog.atomic_skill_count} atomic skills distilled from {reviewCatalog.source_item_count} checklist
+                      items ({reviewCatalog.merged_duplicate_count} duplicates merged). One bounded agent per enabled skill, at
+                      most one finding each; the verifier checks candidates in batches of {reviewCatalog.verifier_batch_size}.
+                    </p>
+                  </div>
+                </div>
+                <p className="providerHint">
+                  {enabledSkillCount} skills enabled across {profile.review_policy.categories.length} of{" "}
+                  {reviewCatalog.categories.length} categories
+                  {profile.review_policy.excluded_skill_ids.length
+                    ? ` (${profile.review_policy.excluded_skill_ids.length} individual skills excluded)`
+                    : ""}
+                  . No finding caps — policy trims only by category and per-skill exclusion.
+                </p>
+                <div className="reviewAgentGrid">
+                  {reviewCatalog.categories.map((category) => {
+                    const enabled = profile.review_policy.categories.includes(category.id);
+                    return (
+                      <article className={enabled ? "reviewAgentCard selected" : "reviewAgentCard"} key={category.id}>
+                        <label className="reviewAgentToggle">
+                          <input type="checkbox" checked={enabled} onChange={() => toggleReviewCategory(category.id)} />
+                          <span>
+                            <strong>{category.title} ({category.skill_count})</strong>
+                            <small>{category.mission}</small>
+                          </span>
+                        </label>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
             <div className="cloudModels">
               <div className="sectionHeader">
                 <div>
@@ -1512,7 +1646,9 @@ function App() {
                         await api.deleteRun(run.id);
                         const refreshed = await api.runs();
                         setRuns(refreshed.runs);
-                        if (latestRun?.id === run.id) setLatestRun(null);
+                        if (latestRun?.id === run.id) {
+                          setLatestRun(refreshed.runs[0] ?? null);
+                        }
                       } catch (error) {
                         setMessage(error instanceof Error ? error.message : String(error));
                       }
