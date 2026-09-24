@@ -1,4 +1,4 @@
-export type Workflow = "hybrid" | "parallel_subtask" | "iterative_evaluator" | "graph";
+export type Workflow = "hybrid" | "parallel_subtask" | "iterative_evaluator" | "graph" | "bounded_review";
 
 export interface GraphCheck {
   term: string;
@@ -28,6 +28,46 @@ export interface FlowGraph {
   renderer?: string;
 }
 
+export interface ReviewCategoryDefinition {
+  id: string;
+  title: string;
+  mission: string;
+  scopes: string[];
+  exclusions: string[];
+  skill_count: number;
+}
+
+export interface ReviewSkillSummary {
+  id: string;
+  category: string;
+  section: string;
+  question: string;
+}
+
+/** GET /api/review-agents — the server-side atomic-skill catalog. Skills are
+ * trimmed summaries (no source_items); one bounded agent runs per enabled skill. */
+export interface ReviewCatalog {
+  version: number;
+  source: string;
+  source_item_count: number;
+  atomic_skill_count: number;
+  merged_duplicate_count: number;
+  deduplication_rule: string;
+  findings_per_skill: number;
+  verifier_batch_size: number;
+  categories: ReviewCategoryDefinition[];
+  skills: ReviewSkillSummary[];
+}
+
+/** Policy trims the catalog only — no finding caps: enabled category ids plus
+ * per-skill opt-outs. Always spread the existing object when patching so
+ * excluded_skill_ids round-trips. */
+export interface ReviewPolicy {
+  findings_per_skill: number;
+  categories: string[];
+  excluded_skill_ids: string[];
+}
+
 export interface CloudModel {
   alias: string;
   provider: string;
@@ -51,6 +91,7 @@ export interface Profile {
   allowed_roots: string[];
   graph?: FlowGraph | null;
   cloud_models: CloudModel[];
+  review_policy: ReviewPolicy;
 }
 
 export interface GeneratedImage {

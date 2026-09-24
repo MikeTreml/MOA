@@ -29,6 +29,7 @@ from providers import generate_image
 from .provider_models import list_models, server_status
 from .graph import auto_layout, validate_graph
 from .provider_presets import provider_presets
+from .review_agents import review_agent_catalog
 from .run_registry import RunRegistry, RunSession
 from .schemas import Evaluation, FlowGraph, Profile, RunRecord, RunRequest
 from .schemas import new_id
@@ -139,6 +140,11 @@ def create_app() -> FastAPI:
     @app.get("/api/provider-presets")
     def presets():
         return {"presets": provider_presets()}
+
+    @app.get("/api/review-agents")
+    def review_agents():
+        """Built-in constitutions and hard limits for bounded review flows."""
+        return review_agent_catalog()
 
     @app.get("/api/profiles")
     def profiles():

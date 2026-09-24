@@ -1,4 +1,4 @@
-import type { FlowGraph, GeneratedImage, Profile, ProviderModel, ProviderPreset, ProviderStatus, RunRecord } from "./types";
+import type { FlowGraph, GeneratedImage, Profile, ProviderModel, ProviderPreset, ProviderStatus, ReviewCatalog, RunRecord } from "./types";
 
 const TOKEN_KEY = "moa-api-token";
 
@@ -48,6 +48,7 @@ export const api = {
   status: () => request<ProviderStatus>("/api/status"),
   models: () => request<{ models: ProviderModel[] }>("/api/models"),
   providerPresets: () => request<{ presets: ProviderPreset[] }>("/api/provider-presets"),
+  reviewCatalog: () => request<ReviewCatalog>("/api/review-agents"),
   profiles: () => request<{ profiles: Profile[]; active: string }>("/api/profiles"),
   saveProfile: (profile: Profile) =>
     request<Profile>("/api/profiles", { method: "POST", body: JSON.stringify(profile) }),

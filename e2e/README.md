@@ -95,5 +95,14 @@ node per graph node, that clicking a node opens its editor, that "Add node" adds
 one, and that a fan-out `over` edge draws.
 Expect `initial nodes: 3`, `after add: 4`, `RESULT: PASS`.
 
+## 10. Navigation and mobile tab state (Playwright + Chromium)
+With the same `serve_stack.py` running:
+```powershell
+$env:NODE_PATH="ui/node_modules"; node e2e\navigation_test.cjs
+```
+Visits every primary tab at a phone-sized viewport, checks its heading, and
+verifies that switching away from a scrolled Profiles screen resets the new
+tab to the top. It also fails on browser console errors. Expect `RESULT: PASS`.
+
 > Note: constructing an OpenAI/httpx client triggers SSL init that some sandboxes
 > block; run these in a normal shell if a sandbox interferes.

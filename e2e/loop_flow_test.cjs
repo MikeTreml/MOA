@@ -37,6 +37,9 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   const page = await (await browser.newContext()).newPage();
 
+  // The fake upstream is shared by the browser harnesses. Reset its state so
+  // this test remains deterministic regardless of run order or retries.
+  await page.request.post("http://127.0.0.1:8773/__test__/reset-gate");
   await page.request.post(`${BASE}/api/profiles`, { data: LOOP_PROFILE });
   const resp = await page.request.post(`${BASE}/api/flows/LoopFlow/run-stream`, { data: { prompt: "explain X" } });
   const { run_id } = await resp.json();

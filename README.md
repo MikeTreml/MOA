@@ -78,6 +78,25 @@ npm run dev
 Saved profiles and run history are stored under `%LOCALAPPDATA%\MoAWorkbench`.
 
 The Profiles tab includes presets for llama.cpp, OMP ChatGPT/Claude routing, generic OpenAI-compatible proxies, Together, and an Atomic Agents placeholder. Profiles store provider names, base URLs, model IDs, and allowed file roots; API keys are read from environment variables such as `OMP_API_KEY`, `TOGETHER_API_KEY`, or `MOA_API_KEY` and are not saved in profile JSON.
+### Bounded code-review agents
+
+Choose **Bounded Review** as a profile's workflow to run one bounded specialist per atomic checklist skill from `workbench/review_skills.json` — 766 skills across 22 categories, each traceable to a numbered item of the source checklist.
+
+- Each specialist answers exactly one atomic question and may return at most **one** candidate finding; its other outcomes are exhausted, not applicable, and blocked.
+- Category scopes (frontend/backend/api/database/config/dependency/ops/all_code) filter the attached context files per specialist, so agents only read sources relevant to their category; a scope that matches nothing falls back to all attached files.
+- The evaluator model verifies candidates per category in batches (batch size comes from the catalog, currently 20) against line-numbered source evidence; acceptance requires the verifier to accept with confidence >= 0.7. Duplicates at the same file and location are removed across categories.
+- Policy lives in `review_policy` on the profile: `categories` (default: all 22) and `excluded_skill_ids`. There are no finding caps anywhere — coverage is exhaustive by construction; trim cost by disabling categories or excluding individual skills.
+
+A full run with every category enabled makes many hundreds of model calls — one per skill plus per-category verifier batches. Local models make that cheap; cloud-model profiles should trim `categories`. The worker roster controls concurrency (specialist calls run through up to 8 parallel slots); the evaluator model is the verifier, and the aggregator model is the fallback specialist when no workers are set.
+
+A saved bounded-review profile is callable like any other agent flow:
+
+    POST /api/flows/<profile-name>/run
+    {"prompt":"Review these files for production-breaking defects.","context_files":["C:/repo/ui/src/App.tsx"]}
+
+The skill catalog is served at `GET /api/review-agents`.
+
+The coverage report states per category how each skill ended: **partial** (the specialist found something and stopped at the one-finding ceiling), **exhausted** (that question surfaced nothing across the assigned files), **not applicable**, or **blocked**. A run is never a clean-code certification — it reports only what the enabled skills verified.
 
 ### LM Studio (default — or llama.cpp / any local OpenAI-compatible server)
 

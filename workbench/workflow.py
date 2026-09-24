@@ -916,7 +916,11 @@ async def run_workflow(
     # The id of the step that produced the current draft — each stage's trace
     # step records its upstream ids so the pop-out can draw real flow edges.
     draft_step_id: str | None = None
-    if profile.workflow == "graph":
+    review_verified: int | None = None
+    if profile.workflow == "bounded_review":
+        from .review_agents import run_bounded_review
+        draft, review_verified = await run_bounded_review(request, complete, emit, activity)
+    elif profile.workflow == "graph":
         draft = await run_graph_workflow(request, complete, emit, activity)
     elif profile.workflow == "iterative_evaluator":
         draft, synth_step = await synthesize(
@@ -959,7 +963,10 @@ async def run_workflow(
         emit(synth_step)
         draft_step_id = synth_step.id
 
-    evaluation = Evaluation(status="PASS", feedback="Evaluation skipped.", score=1)
+    if review_verified is not None:
+        evaluation = Evaluation(status="PASS", feedback=f"Bounded review completed with {review_verified} verified finding(s).", score=1)
+    else:
+        evaluation = Evaluation(status="PASS", feedback="Evaluation skipped.", score=1)
     if profile.workflow in {"hybrid", "iterative_evaluator"}:
         for iteration in range(max(profile.max_iterations, 1)):
             evaluation, eval_step = await evaluate(
@@ -987,5 +994,10 @@ async def run_workflow(
     )
     if run_id is not None:
         record.id = run_id
-    record.file_changes = extract_file_changes(record, profile.allowed_roots)
+    # A bounded review is read-only by definition, and its report embeds
+    # agent-authored finding text verbatim — parsing that for file_changes
+    # would let a prompt-injected fenced JSON block in reviewed source become
+    # a real "proposed" file change. Reviews never propose edits.
+    if profile.workflow != "bounded_review":
+        record.file_changes = extract_file_changes(record, profile.allowed_roots)
     return record
